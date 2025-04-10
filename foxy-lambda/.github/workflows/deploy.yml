@@ -1,0 +1,263 @@
+name: Build and Deploy to Stage
+
+on:
+  push:
+    branches:
+      - dev
+      - staging
+      - production
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ACTIONS_STEP_DEBUG: true
+      DOCKER_TAG: foxy-lambda-builder-${{ github.ref_name }}
+
+    steps:
+      - name: Clear GitHub Actions Cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/aws
+          key: force-refresh
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Tests
+        run: cargo test --verbose
+
+      - name: Build Lambda function
+        run: |
+          docker build -t $DOCKER_TAG -f Dockerfile .
+          docker run --rm -v $(pwd):/code $DOCKER_TAG cargo lambda build --release --target x86_64-unknown-linux-musl
+
+      - name: Package Lambda binary
+        run: |
+          cp target/lambda/foxy-lambda/bootstrap .
+          zip -j foxy-backend-${{ github.run_number }}.zip bootstrap
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: foxy-backend-${{ github.run_number }}.zip
+          path: foxy-backend-${{ github.run_number }}.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      ACTIONS_STEP_DEBUG: true
+      FUNCTION_NAME: foxy-${{ github.ref_name }}-api
+      DEPLOY_ROLE_NAME: Foxy-${{ github.ref_name }}-GitHub-Lambda-Deploy-Role
+      EXEC_ROLE_NAME: Foxy-${{ github.ref_name }}-GitHub-Lambda-ExecutionRole
+      AWS_DEFAULT_REGION: eu-north-1
+      AWS_REGION: eu-north-1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: foxy-backend-${{ github.run_number }}.zip
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::971422686568:role/${{ env.DEPLOY_ROLE_NAME }}
+          aws-region: eu-north-1
+
+      - name: Deploy to AWS Lambda
+        run: |
+          if ! aws lambda get-function --function-name $FUNCTION_NAME; then
+            echo "Lambda function does not exist. Creating..."
+            aws lambda create-function \
+              --function-name $FUNCTION_NAME \
+              --runtime provided.al2 \
+              --role arn:aws:iam::971422686568:role/${{ env.EXEC_ROLE_NAME }} \
+              --handler bootstrap \
+              --zip-file fileb://foxy-backend-${{ github.run_number }}.zip \
+              --region eu-north-1 || { echo "Lambda creation failed!"; exit 1; }
+          
+            # Wait to ensure Lambda is fully created
+            echo "Waiting for Lambda creation to complete..."
+            aws lambda wait function-exists --function-name $FUNCTION_NAME
+          else
+            echo "Lambda function already exists. Updating code..."
+            aws lambda update-function-code \
+              --function-name $FUNCTION_NAME \
+              --zip-file fileb://foxy-backend-${{ github.run_number }}.zip || { echo "Deployment failed!"; exit 1; }
+          fi
+
+      - name: Update API Gateway Integration for /status
+        run: |
+          API_ID=$(aws apigateway get-rest-apis --query "items[?name=='foxy-${{ github.ref_name }}-api'].id" --output text)
+          RESOURCE_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/status'].id" --output text)
+          echo "API_URL=https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com/${{ github.ref_name }}/status" >> $GITHUB_ENV
+
+          if [ -z "$RESOURCE_ID" ]; then
+            ROOT_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query "items[?path=='/'].id" --output text)
+            RESOURCE_ID=$(aws apigateway create-resource \
+              --rest-api-id $API_ID \
+              --parent-id $ROOT_ID \
+              --path-part status \
+              --query 'id' \
+              --output text)
+          fi
+
+          LAMBDA_ARN=$(aws lambda get-function --function-name $FUNCTION_NAME --query 'Configuration.FunctionArn' --output text)
+          
+          # Check if GET method exists
+          METHOD_EXISTS=$(aws apigateway get-method \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method GET 2>/dev/null || echo "NOT_FOUND")
+  
+          # Only create the method if it doesn't exist
+          if [[ "$METHOD_EXISTS" == "NOT_FOUND" ]]; then
+            echo "Creating GET method for /status..."
+            aws apigateway put-method \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method GET \
+            --authorization-type NONE
+          else
+            echo "GET method for /status already exists. Skipping creation."
+          fi
+
+          aws apigateway put-integration \
+            --rest-api-id $API_ID \
+            --resource-id $RESOURCE_ID \
+            --http-method GET \
+            --type AWS_PROXY \
+            --integration-http-method POST \
+            --uri arn:aws:apigateway:${AWS_REGION}:lambda:path/2015-03-31/functions/${LAMBDA_ARN}/invocations
+
+          aws apigateway create-deployment \
+            --rest-api-id $API_ID \
+            --stage-name ${{ github.ref_name }}
+
+      - name: Add Lambda Invoke Permission for API Gateway
+        run: |
+          # Ensure API ID is correct
+          API_ID=$(aws apigateway get-rest-apis \
+            --query "items[?name=='foxy-${{ github.ref_name }}-api'].id" \
+            --output text)
+          
+          echo "Using API Gateway ID: $API_ID"
+          
+          # Check if the permission already exists
+          EXISTING_PERMISSION=$(aws lambda get-policy \
+            --function-name $FUNCTION_NAME 2>/dev/null | grep "apigateway-invoke-status")
+          
+          # Add permission only if it doesn't exist
+          if [ -z "$EXISTING_PERMISSION" ]; then
+            echo "Permission not found. Adding permission..."
+            aws lambda add-permission \
+              --function-name $FUNCTION_NAME \
+              --statement-id apigateway-invoke-status-$(date +%s) \
+              --action lambda:InvokeFunction \
+              --principal apigateway.amazonaws.com \
+              --source-arn arn:aws:execute-api:${AWS_REGION}:971422686568:$API_ID/*/GET/status
+          else
+            echo "Permission already exists. Skipping addition."
+          fi
+
+      - name: Configure API Gateway for /status
+        run: |
+          # Get API ID
+          API_ID=$(aws apigateway get-rest-apis \
+            --query "items[?name=='foxy-${{ github.ref_name }}-api'].id" \
+            --output text)
+          echo "API ID: $API_ID"
+          
+          # Get ROOT ID
+          ROOT_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/'].id" \
+            --output text)
+          echo "ROOT ID: $ROOT_ID"
+          
+          # Check if /status already exists
+          STATUS_RESOURCE_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/status'].id" \
+            --output text)
+          
+          # Create /status if it doesn't exist
+          if [ -z "$STATUS_RESOURCE_ID" ]; then
+            echo "Creating /status resource..."
+            STATUS_RESOURCE_ID=$(aws apigateway create-resource \
+              --rest-api-id $API_ID \
+              --parent-id $ROOT_ID \
+              --path-part status \
+              --query 'id' \
+              --output text)
+            echo "/status created with ID: $STATUS_RESOURCE_ID"
+          else
+            echo "/status resource already exists."
+          fi
+          
+          # Check if GET method exists on /status
+          METHOD_EXISTS=$(aws apigateway get-method \
+            --rest-api-id $API_ID \
+            --resource-id $STATUS_RESOURCE_ID \
+            --http-method GET 2>/dev/null || echo "NOT_FOUND")
+          
+          # Create GET method if missing
+          if [[ "$METHOD_EXISTS" == "NOT_FOUND" ]]; then
+            echo "Creating GET method for /status..."
+            aws apigateway put-method \
+              --rest-api-id $API_ID \
+              --resource-id $STATUS_RESOURCE_ID \
+              --http-method GET \
+              --authorization-type NONE
+          else
+            echo "GET method for /status already exists."
+          fi
+          
+          # Set Lambda Integration
+          LAMBDA_ARN=$(aws lambda get-function \
+            --function-name $FUNCTION_NAME \
+            --query 'Configuration.FunctionArn' \
+            --output text)
+          
+          aws apigateway put-integration \
+            --rest-api-id $API_ID \
+            --resource-id $STATUS_RESOURCE_ID \
+            --http-method GET \
+            --type AWS_PROXY \
+            --integration-http-method POST \
+            --uri arn:aws:apigateway:${AWS_REGION}:lambda:path/2015-03-31/functions/$LAMBDA_ARN/invocations
+          
+          # Deploy the API
+          aws apigateway create-deployment \
+            --rest-api-id $API_ID \
+            --stage-name ${{ github.ref_name }}
+          
+
+      - name: Test Lambda function via API Gateway
+        run: |
+          RESPONSE=$(curl -s -o response.json -w "%{http_code}" "$API_URL")
+          echo "HTTP Status Code: $RESPONSE"
+          cat response.json
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "Test failed! HTTP Status Code: $RESPONSE"
+            exit 1
+          fi
+          if ! grep -q '"status":"OK"' response.json; then
+            echo "Test failed! Response does not contain expected data."
+            exit 1
+          fi

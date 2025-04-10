@@ -1,0 +1,23 @@
+[package]
+name = "foxy-broadcaster"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "foxy-broadcaster"
+path = "src/main.rs"
+
+[dependencies]
+foxy-shared = { path = "../foxy-shared" }
+lambda_runtime = "0.13.0"
+serde = "1"
+tokio = { version = "1", features = ["macros"] }
+serde_json = "1.0.140"
+aws-sdk-sqs = "1.64.0"
+log = "0.4.27"
+hex = "0.4.3"
+ethers-providers = "2"
+ethers-core = "2"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+dotenv = "0.15"
