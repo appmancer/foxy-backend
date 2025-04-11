@@ -7,6 +7,7 @@ use foxy_shared::services::authentication;
 use foxy_shared::services::authentication::generate_tokens;
 use foxy_shared::services::cloudwatch_services::{create_cloudwatch_client, emit_metric};
 use aws_sdk_cloudwatch::{Client as CloudWatchClient};
+use aws_sdk_cloudwatch::types::StandardUnit;
 use http::Response;
 use lambda_http::Body;
 use foxy_shared::utilities::responses::{error_response, success_response};
@@ -68,8 +69,8 @@ async fn validate(event_body: Value, cloudwatch_client: &CloudWatchClient) -> Re
         .await
         .map_err(|e| ValidateError::CognitoCheckFailed(format!("Failed to fetch user data: {:?}", e)))?;
 
-    emit_metric(cloudwatch_client,"AuthValidationSuccess", 1.0, "Count").await;
-    emit_metric(cloudwatch_client,"ValidationLatency", start_time.elapsed().as_millis() as f64, "Milliseconds").await;
+    emit_metric(cloudwatch_client,"AuthValidationSuccess", 1.0, StandardUnit::Count).await;
+    emit_metric(cloudwatch_client,"ValidationLatency", start_time.elapsed().as_millis() as f64, StandardUnit::Milliseconds).await;
 
     Ok(ValidateResponse {
         message: "Token is valid, user exists (or was created) in Cognito".to_string(),

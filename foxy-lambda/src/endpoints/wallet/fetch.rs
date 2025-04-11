@@ -8,6 +8,7 @@ use foxy_shared::utilities::requests::extract_bearer_token;
 use foxy_shared::utilities::responses::{error_response, success_response};
 use foxy_shared::services::cloudwatch_services::{create_cloudwatch_client, emit_metric};
 use aws_sdk_cloudwatch::Client as CloudWatchClient;
+use aws_sdk_cloudwatch::types::StandardUnit;
 
 pub async fn handler(event: Request) -> Result<Response<Body>, lambda_http::Error> {
     let token = extract_bearer_token(&event);
@@ -33,7 +34,7 @@ async fn fetch_wallet(token: &str, cloudwatch_client: &CloudWatchClient) -> Resu
             .map_err(|e| WalletError::MissingWallet(format!("Failed to fetch user data: {:?}", e)))?;
 
         let duration = start_time.elapsed().as_secs_f64();
-        emit_metric(cloudwatch_client, "FetchWallet", duration, "seconds").await;
+        emit_metric(cloudwatch_client, "FetchWallet", duration, StandardUnit::Seconds).await;
         Ok(user_profile.wallet_address.unwrap())
     }).await
 }

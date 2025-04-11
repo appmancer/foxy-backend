@@ -8,7 +8,7 @@ use aws_config::sts::AssumeRoleProvider;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_cloudwatch::{Client as CloudWatchClient};
 
-const ROLE_ARN: &str = "arn:aws:iam::971422686568:role/Foxy-dev-Cognito-Lambda-ExecutionRole";
+const ROLE_ARN: &str = "arn:aws:iam::971422686568:role/Foxy-dev-Lambda-ExecutionRole";
 const SQS_ROLE_ARN: &str = "arn:aws:iam::971422686568:role/Foxy-dev-FoxyLambdaSQSRole";
 
 async fn assume_role(arn: &str) -> Result<StsCredentials, Box<dyn std::error::Error>> {

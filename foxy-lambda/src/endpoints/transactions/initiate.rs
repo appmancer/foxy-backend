@@ -1,5 +1,7 @@
+use std::sync::Arc;
 use std::time::Instant;
 use aws_sdk_cloudwatch::{Client as CloudWatchClient};
+use aws_sdk_cloudwatch::types::StandardUnit;
 use http::Response;
 use lambda_http::{Body, Request};
 use serde_json::Value;
@@ -74,15 +76,16 @@ async fn handle_transaction_initiation(
         // Get nonce for sender address
         let nonce_manager = NonceManager::new()?;
         builder.nonce = nonce_manager.get_nonce(&builder.sender_address).await?;
+        log::info!("Got nonce: {:?}", builder.nonce);
 
         // Log metrics
         let elapsed_time = start_time.elapsed().as_millis() as f64;
-        emit_metric(cloudwatch_client, "ValidationLatency", elapsed_time, "Milliseconds").await;
-        emit_metric(cloudwatch_client, "ValidationSuccessCount", 1.0, "Count").await;
+        emit_metric(cloudwatch_client, "ValidationLatency", elapsed_time, StandardUnit::Milliseconds).await;
+        emit_metric(cloudwatch_client, "ValidationSuccessCount", 1.0, StandardUnit::Count).await;
 
         match builder.build(&cognito_client, &dynamo_db_client).await {
             Ok(mut transaction) => {
-                let manager = TransactionEventManager::new(dynamo_db_client, get_transaction_event_table());
+                let manager = TransactionEventManager::new(Arc::new(dynamo_db_client.clone()), get_transaction_event_table());
                 manager.persist_initial_event(&mut transaction).await?;
 
                 //We need to return an unsigned transactions

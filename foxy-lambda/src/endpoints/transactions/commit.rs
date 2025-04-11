@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 use http::Response;
 use lambda_http::{Body, Request};
@@ -14,6 +15,7 @@ use foxy_shared::utilities::responses::{error_response, success_response};
 use foxy_shared::utilities::config::get_transaction_event_table;
 use aws_sdk_dynamodb::Client as DynamoDbClient;
 use aws_sdk_cloudwatch::Client as CloudWatchClient;
+use aws_sdk_cloudwatch::types::StandardUnit;
 use foxy_shared::services::queue_services::get_sqs_client;
 use foxy_shared::utilities::config::get_broadcast_queue;
 use foxy_shared::services::queue_services::push_to_broadcast_queue;
@@ -61,7 +63,7 @@ pub async fn handle_signing(token: &str,
         log::info!("Initiating transaction for user: {}", user_id);
         let start_time = Instant::now();
 
-        let tem = TransactionEventManager::new(&dynamo_db_client, get_transaction_event_table());
+        let tem = TransactionEventManager::new(Arc::new(dynamo_db_client.clone()), get_transaction_event_table());
         let event = tem.get_latest_event(transaction_id).await?;
 
         log::info!("Transaction event: {:?}", event);
@@ -99,8 +101,8 @@ pub async fn handle_signing(token: &str,
 
         // Log metrics
         let elapsed_time = start_time.elapsed().as_millis() as f64;
-        emit_metric(cloudwatch_client, "SigningLatency", elapsed_time, "Milliseconds").await;
-        emit_metric(cloudwatch_client, "SignedSuccessCount", 1.0, "Count").await;
+        emit_metric(cloudwatch_client, "SigningLatency", elapsed_time, StandardUnit::Milliseconds).await;
+        emit_metric(cloudwatch_client, "SignedSuccessCount", 1.0, StandardUnit::Count).await;
 
         Ok(())
 
@@ -145,7 +147,7 @@ mod tests {
                 println!("✅ Transaction signed successfully");
 
                 // Optional: verify latest event type is Signed
-                let event_manager = TransactionEventManager::new(&dynamodb_client, get_transaction_event_table());
+                let event_manager = TransactionEventManager::new(Arc::new(dynamodb_client.clone()), get_transaction_event_table());
                 let latest_event = event_manager.get_latest_event(transaction_id).await?;
 
                 assert_eq!(latest_event.event_type, EventType::Signing);

@@ -7,6 +7,7 @@ use foxy_shared::utilities::phone_numbers::normalize_and_hash;
 use aws_sdk_dynamodb::Client as DynamoDbClient;
 use foxy_shared::database::dynamo_identity::update_phone_hash;
 use aws_sdk_cloudwatch::Client as CloudWatchClient;
+use aws_sdk_cloudwatch::types::StandardUnit;
 use http::Response;
 use lambda_http::{Body, Request};
 use serde_json::Value;
@@ -67,7 +68,7 @@ async fn save_phone_number(token: &str,
             .map_err(|e| PhoneNumberError::DynamoDBUpdateFailed(format!("Failed to update phone number: {}", e)))?;
 
         let duration = start_time.elapsed().as_secs_f64();
-        emit_metric(cloudwatch_client, "SavePhoneNumber", duration, "seconds").await;
+        emit_metric(cloudwatch_client, "SavePhoneNumber", duration, StandardUnit::Seconds).await;
         Ok("Phone number saved".to_string())
     }).await
 }

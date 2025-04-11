@@ -6,6 +6,7 @@ use std::fmt;
 use foxy_shared::services::cloudwatch_services::{create_cloudwatch_client, emit_metric};
 use foxy_shared::utilities::logging::log_info;
 use aws_sdk_cloudwatch::{Client as CloudWatchClient};
+use aws_sdk_cloudwatch::types::StandardUnit;
 use http::Response;
 use lambda_http::Body;
 use serde_json::Value;
@@ -75,7 +76,7 @@ async fn refresh_access_token(
         .map_err(|err| RefreshError::CognitoAuthFailed(format!("AWS Cognito error: {:?}", err)))?;
 
     let elapsed_time = start_time.elapsed().as_millis() as f64;
-    emit_metric(cloudwatch_client,"TokenRefreshLatency", elapsed_time, "Milliseconds").await;
+    emit_metric(cloudwatch_client,"TokenRefreshLatency", elapsed_time, StandardUnit::Milliseconds).await;
 
     let access_token = response
         .authentication_result()
@@ -89,7 +90,7 @@ async fn refresh_access_token(
         .map(|expiry| expiry as u64)
         .ok_or_else(|| RefreshError::CognitoAuthFailed("Missing expires_in".to_string()))?;
 
-    emit_metric(cloudwatch_client, "TokenRefreshSuccess", 1.0, "Count").await;
+    emit_metric(cloudwatch_client, "TokenRefreshSuccess", 1.0, StandardUnit::Count).await;
 
     Ok(RefreshResponse {
         access_token,

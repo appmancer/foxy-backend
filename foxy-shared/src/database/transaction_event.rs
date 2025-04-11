@@ -1,18 +1,19 @@
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 use crate::database::errors::DynamoDbError;
 use crate::models::transactions::{EventType, Transaction, TransactionStatus};
 use crate::state_machine::transaction_event_factory::{TransactionEvent, TransactionEventFactory};
 
-pub struct TransactionEventManager<'a> {
-    client: &'a DynamoDbClient,
+pub struct TransactionEventManager {
+    client: Arc<DynamoDbClient>,
     table_name: String,
 }
 
-impl<'a> TransactionEventManager<'a> {
-    pub fn new(client: &'a DynamoDbClient, table_name: String) -> Self {
+impl TransactionEventManager {
+    pub fn new(client: Arc<DynamoDbClient>, table_name: String) -> Self {
         Self { client, table_name }
     }
 
@@ -20,7 +21,6 @@ impl<'a> TransactionEventManager<'a> {
         &self,
         event: &TransactionEvent,
     ) -> Result<(), DynamoDbError> {
-
         if !event.event_id.is_empty() {
             return Err(DynamoDbError::AlreadyPersisted(format!(
                 "Attempted to persist an event that already has event_id: {}",

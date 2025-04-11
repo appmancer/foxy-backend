@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Fetch the exported role name dynamically
-ROLE_EXPORT_NAME="Foxy-dev-FoxyLambdaSQSRole"
+ROLE_EXPORT_NAME="Foxy-dev-FoxyLambdaSQSRoleName"
 ROLE_NAME=$(aws cloudformation list-exports \
     --query "Exports[?Name=='${ROLE_EXPORT_NAME}'].Value" \
     --output text)

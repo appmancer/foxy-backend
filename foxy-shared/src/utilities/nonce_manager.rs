@@ -33,6 +33,8 @@ impl NonceManager {
             "id": 1
         });
 
+        log::info!("requesting nonce: {:?}", payload);
+
         let res = self.client
             .post(&self.rpc_url)
             .json(&payload)

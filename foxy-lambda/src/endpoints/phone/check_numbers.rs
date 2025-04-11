@@ -6,6 +6,7 @@ use foxy_shared::utilities::phone_numbers::normalize_and_hash;
 use foxy_shared::database::dynamo_identity::parallel_batches;
 use aws_sdk_dynamodb::{Client as DynamoDbClient};
 use aws_sdk_cloudwatch::Client as CloudWatchClient;
+use aws_sdk_cloudwatch::types::StandardUnit;
 use http::Response;
 use lambda_http::{Body, Request};
 use serde_json::Value;
@@ -79,7 +80,7 @@ async fn check_phone_numbers(
             .collect();
 
         let duration = start_time.elapsed().as_secs_f64();
-        emit_metric(cloudwatch_client, "CheckPhoneNumbers", duration, "seconds").await;
+        emit_metric(cloudwatch_client, "CheckPhoneNumbers", duration, StandardUnit::Seconds).await;
 
         Ok(matched)
     }).await
@@ -94,6 +95,31 @@ mod tests {
     use foxy_shared::services::cloudwatch_services::create_cloudwatch_client;
     use foxy_shared::utilities::test::{get_cognito_client_with_assumed_role, get_dynamodb_client_with_assumed_role};
     use super::*;
+
+
+    #[tokio::test]
+    async fn test_batch_lookup_returns_data() {
+        let _ = env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Debug)
+            .try_init();
+
+        dotenv::dotenv().ok();
+        let cognito_client = get_dynamodb_client_with_assumed_role().await;
+
+        let test_hashes = vec![
+            "430da017dc398ae959fd6b28db09aeae7c7c409d8e27b8590cfce1060dd8a450".to_string(),
+            "fd4cd5c2f68838cd0b9781dfeb825c6edd3417141b5d930ee418946c044a273e".to_string(),
+        ];
+
+        let result = parallel_batches(&cognito_client, test_hashes.clone()).await.unwrap();
+
+        log::info!("Result: {:?}", result);
+
+        for hash in test_hashes {
+            assert!(result.contains_key(&hash), "Missing result for hash: {}", hash);
+        }
+    }
 
     #[tokio::test]
     async fn integration_test() -> Result<(), Box<dyn std::error::Error>> {

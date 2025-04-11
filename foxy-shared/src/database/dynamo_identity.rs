@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::task;
 use futures::future::join_all;
 use crate::utilities::config::get_user_lookup_table;
-use crate::utilities::fields::{cognito, dynamodb};
+use crate::utilities::fields::dynamodb;
 
 pub async fn update_phone_hash(
     dynamodb_client: &DynamoDbClient,
@@ -29,7 +29,7 @@ pub async fn update_phone_hash(
         .table_name(&table_name)
         .item(dynamodb::PHONE_FIELD, AttributeValue::S(hashed_phone.to_string()))
         .item(dynamodb::USER_ID_FIELD, AttributeValue::S(user_sub.to_string()))
-        .item(cognito::WALLET_FIELD, AttributeValue::S(wallet_address.to_string()))
+        .item(dynamodb::WALLET_FIELD, AttributeValue::S(wallet_address.to_string()))
         .send()
         .await
     {

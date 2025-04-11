@@ -10,4 +10,5 @@ pub mod cognito {
 pub mod dynamodb {
     pub const PHONE_FIELD: &str = "hashed_phone";
     pub const USER_ID_FIELD: &str = "user_id";
+    pub const WALLET_FIELD: &str = "wallet_address";
 }

@@ -10,6 +10,7 @@ use foxy_shared::utilities::responses::{error_response, success_response};
 use foxy_shared::utilities::wallet::{format_wei_to_eth_f64, format_wei_to_eth_string, get_wallet_balance};
 use foxy_shared::services::cloudwatch_services::{create_cloudwatch_client, emit_metric};
 use aws_sdk_cloudwatch::Client as CloudWatchClient;
+use aws_sdk_cloudwatch::types::StandardUnit;
 use aws_sdk_cognitoidentityprovider::Client as CognitoClient;
 use foxy_shared::models::transactions::TokenType;
 use foxy_shared::utilities::exchange::ExchangeRateManager;
@@ -53,7 +54,7 @@ async fn fetch_balance(token: &str, cognito_client: &CognitoClient, cloudwatch_c
                 let fiat_value = eth * rate;
 
                 let duration = start_time.elapsed().as_secs_f64();
-                emit_metric(cloudwatch_client, "GetBalance", duration, "seconds").await;
+                emit_metric(cloudwatch_client, "GetBalance", duration, StandardUnit::Seconds).await;
                 Ok(BalanceResponse {
                     wei: balance.to_string(),
                     token: "ETH".to_string(),

@@ -1,0 +1,5 @@
+/target
+/foxy-backend.zip
+/foxy-lambda/.env
+/foxy-shared/.env
+/foxy-broadcaster/.env

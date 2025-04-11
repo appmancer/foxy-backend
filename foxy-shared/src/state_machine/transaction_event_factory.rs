@@ -53,7 +53,7 @@ impl TransactionEventFactory {
     ) -> Result<Option<TransactionEvent>, TransactionError> {
         match (&last_event.event_type, &new_tx.status) {
             (EventType::Creation, TransactionStatus::Signed) => Self::created_signed_event(last_event, new_tx),
-            (EventType::Broadcasting, TransactionStatus::Broadcasted) => Self::created_broadcast_event(last_event, new_tx),
+            (EventType::Signing, TransactionStatus::Broadcasted) => Self::created_broadcast_event(last_event, new_tx),
             _ => Ok(None),
         }
     }
@@ -78,9 +78,9 @@ impl TransactionEventFactory {
             new_tx.transaction_id.clone(),
             last_event.user_id.clone(),
             EventType::Broadcasting,
-            TransactionStatus::Broadcasted,
+            TransactionStatus::Pending,
             Utc::now(),
-            new_tx.clone(),
+            new_tx.clone().with_status(TransactionStatus::Pending),
         );
 
         Ok(Some(new_event))

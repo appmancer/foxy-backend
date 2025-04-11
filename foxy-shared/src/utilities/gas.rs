@@ -117,11 +117,10 @@ pub async fn fetch_gas_from_api(
     let l1_fee = ((l1_gas_used as u128 * l1_gas_price as u128) * L1_SCALAR_BPS as u128) / 10_000;
 
     // Final fee summary -
-    // TODO:  This is a fixed uplift of the fees to cover us from unexpected charges
-    //        It only exists because crypto protocols are very opaque about charges and it is
-    //        difficult to estimate.  We need to think about better strategies.
-    let max_fee_per_gas = gas_price * 12 / 10;
-    let network_fee = (gas_limit * gas_price) as u128;
+    let priority_fee = 1_000u64; // 1000 wei (0.000001 gwei) is a good floor
+    let max_fee_per_gas = gas_price + 10 * priority_fee; // generous buffer
+
+    let network_fee = (gas_limit as u128) * (max_fee_per_gas as u128);
 
     tracker.track::<(), ()>(
         &Ok(()),
@@ -148,7 +147,7 @@ pub async fn fetch_gas_from_api(
         gas_price,
         l1_fee,
         max_fee_per_gas,
-        max_priority_fee_per_gas: 0,
+        max_priority_fee_per_gas: 150000,
         network_fee,
     })
 }

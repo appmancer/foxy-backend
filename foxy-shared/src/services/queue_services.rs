@@ -95,13 +95,13 @@ mod tests {
                     found = true;
 
                     // ✅ Delete the message to keep the queue clean
-/*                    sqs_client
+                    sqs_client
                         .delete_message()
                         .queue_url(&queue_url)
                         .receipt_handle(receipt_handle)
                         .send()
                         .await
-                        .expect("Failed to delete message");*/
+                        .expect("Failed to delete message");
 
                     break;
                 }

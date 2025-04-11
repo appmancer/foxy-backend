@@ -12,6 +12,7 @@ use foxy_shared::utilities::requests::extract_bearer_token;
 use foxy_shared::utilities::responses::{error_response, success_response};
 use foxy_shared::services::cloudwatch_services::{create_cloudwatch_client, emit_metric};
 use aws_sdk_cloudwatch::Client as CloudWatchClient;
+use aws_sdk_cloudwatch::types::StandardUnit;
 use foxy_shared::utilities::authentication::with_valid_user;
 
 pub async fn handler(event: Request, body: Value) -> Result<Response<Body>, lambda_http::Error> {
@@ -66,7 +67,7 @@ async fn create_wallet(token: &str, wallet_address: &str, cloudwatch_client: &Cl
         log_info("wallet_creation", "Wallet successfully created");
 
         let duration = start_time.elapsed().as_secs_f64();
-        emit_metric(cloudwatch_client, "CreateWallet", duration, "seconds").await;
+        emit_metric(cloudwatch_client, "CreateWallet", duration, StandardUnit::Seconds).await;
         Ok(WalletCreateResponse {
             message: "Wallet address successfully added".to_string(),
         })

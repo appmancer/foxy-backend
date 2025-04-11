@@ -12,7 +12,7 @@ pub async fn create_cloudwatch_client() -> CloudWatchClient {
 }
 
 /// Emits a CloudWatch metric with a given name, value, and unit.
-pub async fn emit_metric(cloud_watch_client: &CloudWatchClient, metric_name: &str, value: f64, unit: &str) {
+pub async fn emit_metric(cloud_watch_client: &CloudWatchClient, metric_name: &str, value: f64, unit: StandardUnit) {
     // Fetch environment variable or default to "dev"
     let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "dev".to_string());
     let namespace = format!("{}/FoxyLambda/Metrics", environment);
@@ -22,7 +22,7 @@ pub async fn emit_metric(cloud_watch_client: &CloudWatchClient, metric_name: &st
     let datum = MetricDatum::builder()
         .metric_name(metric_name)
         .value(value)
-        .unit(StandardUnit::from(unit))
+        .unit(unit)
         .build();
 
     if let Err(err) = cloud_watch_client
@@ -271,7 +271,7 @@ mod tests {
             .expect("cloudwatch client");
 
         // Act
-        emit_metric(&client, "TestStaticMetric", 1.0, "Count").await;
+        emit_metric(&client, "TestStaticMetric", 1.0, StandardUnit::Count).await;
 
         // Assert: no panic = success for now
         // Optional: you can log something like:

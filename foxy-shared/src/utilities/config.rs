@@ -50,12 +50,22 @@ pub fn get_rpc_url() -> String {
     }
 }
 
+pub fn get_test_rpc_url() -> String {
+    //when you know you want the test network
+    get_env_var("INFURA_RPC_TESTNET")
+}
+
 pub fn get_ethereum_url() -> String {
     env::var("ETHEREUM_RPC_MAINNET").unwrap_or_else(|_| "https://mainnet.infura.io/v3/60751eb31a574890b941ec68e4f5dc18".to_string())
 }
 
 pub fn get_broadcast_queue() -> String {
     get_env_var("BROADCAST_QUEUE_URL")
+}
+
+pub fn get_visibility_timeout() -> String {
+    //when you know you want the test network
+    get_env_var("VISIBILITY_TIMEOUT_SECS")
 }
 
 pub fn get_chain_id() -> u64 {
