@@ -53,7 +53,7 @@ impl TransactionEventFactory {
     ) -> Result<Option<TransactionEvent>, TransactionError> {
         match (&last_event.event_type, &new_tx.status) {
             (EventType::Creation, TransactionStatus::Signed) => Self::created_signed_event(last_event, new_tx),
-            (EventType::Signing, TransactionStatus::Broadcasted) => Self::created_broadcast_event(last_event, new_tx),
+            (EventType::Signing, TransactionStatus::Pending) => Self::created_broadcast_event(last_event, new_tx),
             _ => Ok(None),
         }
     }
@@ -208,7 +208,7 @@ mod tests {
     async fn test_handle_creation_to_signed_wrong_status() {
         let last_event = creation_event();
         let mut new_tx = base_transaction();
-        new_tx.status = TransactionStatus::Broadcasted;
+        new_tx.status = TransactionStatus::Pending;
 
         let result = TransactionEventFactory::created_signed_event(&last_event, &new_tx);
 

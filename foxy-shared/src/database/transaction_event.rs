@@ -6,6 +6,8 @@ use uuid::Uuid;
 use crate::database::errors::DynamoDbError;
 use crate::models::transactions::{EventType, Transaction, TransactionStatus};
 use crate::state_machine::transaction_event_factory::{TransactionEvent, TransactionEventFactory};
+use crate::utilities::config::get_transaction_view_table;
+use crate::views::status_view::TransactionStatusViewManager;
 
 pub struct TransactionEventManager {
     client: Arc<DynamoDbClient>,
@@ -13,12 +15,17 @@ pub struct TransactionEventManager {
 }
 
 impl TransactionEventManager {
-    pub fn new(client: Arc<DynamoDbClient>, table_name: String) -> Self {
-        Self { client, table_name }
+    // table_name is the event log table, probably from get_transaction_event_table()
+    pub fn new(client: Arc<DynamoDbClient>, table_name: String) -> Arc<Self> {
+        Arc::new(Self { client, table_name })
     }
 
-    pub async fn persist_dual(
-        &self,
+    pub fn client(&self) -> Arc<DynamoDbClient> {
+        self.client.clone()
+    }
+
+    pub async fn persist(
+        self: Arc<Self>,
         event: &TransactionEvent,
     ) -> Result<(), DynamoDbError> {
         if !event.event_id.is_empty() {
@@ -28,26 +35,25 @@ impl TransactionEventManager {
             )));
         }
 
-        let transaction = event.transaction();
-
-        let sender_item = self.to_dynamo_item(event, &transaction.sender_address)?;
-        let recipient_item = self.to_dynamo_item(event, &transaction.recipient_address)?;
+        let item = self.to_dynamo_item(event)?;
 
         self.client
             .put_item()
             .table_name(&self.table_name)
-            .set_item(Some(sender_item))
+            .set_item(Some(item))
             .send()
             .await
             .map_err(DynamoDbError::from)?;
 
-        self.client
-            .put_item()
-            .table_name(&self.table_name)
-            .set_item(Some(recipient_item))
-            .send()
-            .await
-            .map_err(DynamoDbError::from)?;
+        let projector = TransactionStatusViewManager::new(
+            get_transaction_view_table(),
+            self.client.clone(),
+            self.clone(),
+        );
+
+        if let Err(e) = projector.project(&event.transaction_id).await {
+            tracing::error!(?e, "Failed to project status view");
+        }
 
         Ok(())
     }
@@ -55,7 +61,6 @@ impl TransactionEventManager {
     fn to_dynamo_item(
         &self,
         event: &TransactionEvent,
-        context_wallet: &str,
     ) -> Result<HashMap<String, AttributeValue>, DynamoDbError> {
         let mut item = HashMap::new();
         let event_id = Uuid::new_v4().to_string();
@@ -72,18 +77,17 @@ impl TransactionEventManager {
         item.insert("Status".to_string(), AttributeValue::S(event.status.to_string()));
         item.insert("SenderAddress".to_string(), AttributeValue::S(event.sender_address.clone()));
         item.insert("RecipientAddress".to_string(), AttributeValue::S(event.recipient_address.clone()));
-        item.insert("ContextWallet".to_string(), AttributeValue::S(context_wallet.to_string()));
         item.insert("CreatedAt".to_string(), AttributeValue::S(timestamp));
         item.insert("Transaction".to_string(), AttributeValue::S(transaction_json));
 
         Ok(item)
     }
 
-    pub async fn persist_initial_event(&self, transaction: &mut Transaction,) -> Result<(), DynamoDbError> {
+    pub async fn persist_initial_event(self: Arc<Self>, transaction: &mut Transaction) -> Result<(), DynamoDbError> {
         transaction.transaction_id = Uuid::new_v4().to_string();
         let event = TransactionEventFactory::initial_event(transaction.clone());
 
-        self.persist_dual(&event).await?;
+        self.persist(&event).await?;
         Ok(())
     }
 
@@ -96,7 +100,7 @@ impl TransactionEventManager {
             .table_name(&self.table_name)
             .key_condition_expression("PK = :pk")
             .expression_attribute_values(":pk", AttributeValue::S(format!("Transaction#{}", transaction_id)))
-            .scan_index_forward(false) // descending
+            .scan_index_forward(false)
             .limit(1)
             .send()
             .await
@@ -155,16 +159,15 @@ impl TransactionEventManager {
             .map_err(|e| DynamoDbError::Deserialization(e.to_string()))?;
 
         Ok(TransactionEvent {
-            event_id: String::new(), // ignored since we're only reading
+            event_id: String::new(),
             transaction_id: transaction_id.to_string(),
-            user_id: user_id.to_string(),
+            user_id,
             event_type,
             status,
-            sender_address: sender_address.to_string(),
-            recipient_address: recipient_address.to_string(),
+            sender_address,
+            recipient_address,
             transaction,
             created_at
         })
     }
-
 }

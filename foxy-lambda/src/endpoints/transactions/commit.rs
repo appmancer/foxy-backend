@@ -77,7 +77,7 @@ pub async fn handle_signing(token: &str,
         //Create the signing event
         match TransactionEventFactory::process_event(&event, &tx) {
             Ok(Some(new_event)) => {
-                tem.persist_dual(&new_event).await?;
+                tem.persist(&new_event).await?;
                 let sqs_client = get_sqs_client().await?;
                 match push_to_broadcast_queue(&sqs_client, &get_broadcast_queue(), transaction_id, &user_id).await{
                     Ok(_) => {},

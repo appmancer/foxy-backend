@@ -12,14 +12,15 @@ use crate::services::cognito_services::get_party_details_from_wallet;
 use crate::utilities::config::{get_chain_id, get_network};
 use aws_sdk_dynamodb::Client as DynamoDbClient;
 use aws_sdk_cognitoidentityprovider::Client as CognitoClient;
+use ethers_core::types::H256;
+use ethers_core::utils::keccak256;
 
 /// Comprehensive transaction statuses, including Layer 2 (Optimism) specifics
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum TransactionStatus {
     Created,              // Transaction intent created but not signed
     Signed,               // Transaction signed by the user's wallet
-    Broadcasted,          // Sent to the network
-    Pending,              // Awaiting confirmation (in mempool)
+    Pending,              // Sent to the network, awaiting confirmation (in mempool)
     Confirmed,            // Mined with 1 confirmation (considered settled)
     Finalized,            // Multiple confirmations; immutable
 
@@ -40,7 +41,6 @@ impl fmt::Display for TransactionStatus {
         match self {
             TransactionStatus::Created => write!(f, "Created"),
             TransactionStatus::Signed => write!(f, "Signed"),
-            TransactionStatus::Broadcasted => write!(f, "Broadcasted"),
             TransactionStatus::Pending => write!(f, "Pending"),
             TransactionStatus::Confirmed => write!(f, "Confirmed"),
             TransactionStatus::Finalized => write!(f, "Finalized"),
@@ -64,7 +64,6 @@ impl FromStr for TransactionStatus {
         match s.to_lowercase().as_str() {
             "created" => Ok(TransactionStatus::Created),
             "signed" => Ok(TransactionStatus::Signed),
-            "broadcasted" => Ok(TransactionStatus::Broadcasted),
             "pending" => Ok(TransactionStatus::Pending),
             "confirmed" => Ok(TransactionStatus::Confirmed),
             "finalized" => Ok(TransactionStatus::Finalized),
@@ -220,6 +219,7 @@ pub struct Transaction {
     pub created_at: DateTime<Utc>,
 }
 
+
 impl Default for Transaction {
     fn default() -> Self {
         Self {
@@ -325,6 +325,12 @@ impl Transaction {
     pub fn with_transaction_hash(mut self, signed: &str) -> Self {
         self.transaction_hash = Some(signed.parse().unwrap());
         self
+    }
+
+    pub fn tx_hash(&self) -> Option<H256> {
+        let signed_tx = self.signed_tx.as_ref()?;
+        let raw = hex::decode(signed_tx.trim_start_matches("0x")).ok()?;
+        Some(H256::from(keccak256(&raw)))
     }
 }
 
@@ -645,4 +651,60 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_tx_hash_derives_correctly() {
+        let raw = json!({
+            "transaction_id": "3e38a355-f26f-4ac2-ac55-1edb5bcfd09f",
+            "user_id": "112527246877271240195",
+            "sender_address": "0xe006487c4CEC454574b6C9A9F79fF8A5DEe636A0",
+            "recipient_address": "0xa826d3484625b29dfcbdaee6ca636a1acb439bf8",
+            "transaction_value": 1000,
+            "token_type": "ETH",
+            "status": "Broadcasted",
+            "network_fee": 21000,
+            "service_fee": 0,
+            "total_fees": 21000,
+            "fiat_value": 1,
+            "fiat_currency": "GBP",
+            "chain_id": 11155420,
+            "signed_tx": "0xf86b0f830f424082520894a826d3484625b29dfcbdaee6ca636a1acb439bf885e8d4a51000808401546fdca0f11a428a380a093705b21b1d59ad21240ec5fb6a88230b6e97616ff0384c4618a02b44589337b649c9e5cdb9e0c9e191c3ccf9e2676aed5c6e4b6f3c58368fd69a",
+            "transaction_hash": "0x797f4cc25a85a46c2812cc5d2668fc82a93351368557a4e1aead0fed7c64505d",
+            "event_log": null,
+            "metadata": {
+                "message": "",
+                "display_currency": "GBP",
+                "expected_currency_amount": 0,
+                "from": {
+                    "name": "Anonymous",
+                    "wallet": "0x0000000000000000000000000000000000000000"
+                },
+                "to": {
+                    "name": "Anonymous",
+                    "wallet": "0x0000000000000000000000000000000000000000"
+                }
+            },
+            "priority_level": "Standard",
+            "network": "OptimismSepolia",
+            "gas_price": 1000000,
+            "gas_used": null,
+            "gas_limit": 21000,
+            "nonce": null,
+            "max_fee_per_gas": 1000000,
+            "max_priority_fee_per_gas": 150000,
+            "total_fee_paid": null,
+            "exchange_rate": null,
+            "block_number": null,
+            "receipt_status": null,
+            "contract_address": null,
+            "approval_tx_hash": null,
+            "recipient_tx_hash": null,
+            "fee_tx_hash": null,
+            "created_at": "2025-04-11T16:29:35.096687121Z"
+        });
+        let tx: Transaction = serde_json::from_value(raw).unwrap();
+        let hash = tx.tx_hash().unwrap();
+        assert_eq!(format!("{:#x}", hash), "0x797f4cc25a85a46c2812cc5d2668fc82a93351368557a4e1aead0fed7c64505d"); // expected value
+    }
+
 }

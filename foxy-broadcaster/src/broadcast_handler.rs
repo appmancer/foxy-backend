@@ -33,7 +33,7 @@ pub async fn function_handler_with_cache(
 ) -> Result<Value, Error> {
     let tracker = OperationMetricTracker::build("BroadcastTriggered").await;
     let queue_url = get_broadcast_queue();
-    let tem = Arc::new(TransactionEventManager::new(dynamo_db_client, get_transaction_event_table()));
+    let tem = TransactionEventManager::new(dynamo_db_client, get_transaction_event_table());
     let provider = Arc::new(Provider::<Http>::try_from(get_rpc_url())?);
 
     let result = sqs_client
@@ -132,7 +132,7 @@ pub async fn function_handler_with_cache(
                         .with_transaction_hash(&format!("{:#x}", pending.tx_hash()));
 
                     if let Some(new_event) = TransactionEventFactory::process_event(&event, &updated_tx).unwrap_or(None) {
-                        tem.persist_dual(&new_event).await.ok();
+                        tem.persist(&new_event).await.ok();
                         info!("📝 Broadcast event persisted");
                     }
 

@@ -12,25 +12,10 @@ mod broadcaster_tests {
     use crate::broadcast_handler::function_handler_with_cache;
     use std::collections::VecDeque;
     use foxy_shared::services::queue_services::{push_to_broadcast_queue};
-    use foxy_shared::utilities::test::{get_dynamodb_client_with_assumed_role, get_sqs_client_with_assumed_role};
-    use once_cell::sync::OnceCell;
+    use foxy_shared::utilities::test::{get_dynamodb_client_with_assumed_role, get_sqs_client_with_assumed_role, init_tracing};
     use tracing::info;
-    use tracing_subscriber::{FmtSubscriber, EnvFilter};
     use foxy_shared::state_machine::transaction_event_factory::TransactionEventFactory;
 
-    static INIT: OnceCell<()> = OnceCell::new();
-
-    fn init_tracing() {
-        INIT.get_or_init(|| {
-            let subscriber = FmtSubscriber::builder()
-                .with_env_filter(EnvFilter::from_default_env()) // optionally set RUST_LOG
-                .with_test_writer() // required to capture test output
-                .finish();
-
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("Failed to set global tracing subscriber");
-        });
-    }
 
     #[tokio::test]
     async fn test_broadcaster_end_to_end() {
@@ -43,8 +28,9 @@ mod broadcaster_tests {
         let sqs_client = get_sqs_client_with_assumed_role().await.unwrap();
         let queue_url = config::get_broadcast_queue();
         let dynamo_db_client = get_dynamodb_client_with_assumed_role().await;
-        let tem = TransactionEventManager::new(Arc::new(dynamo_db_client.clone()),
-                                               config::get_transaction_event_table());
+        let tem = TransactionEventManager::new(
+                                                        Arc::new(dynamo_db_client.clone()),
+                                                        config::get_transaction_event_table());
 
         info!("Starting test");
         // Sign transaction
@@ -89,7 +75,7 @@ mod broadcaster_tests {
         };
 
         // Store the transaction/event in DynamoDB
-        tem.persist_initial_event(&mut transaction).await.expect("Persist failed");
+        tem.clone().persist_initial_event(&mut transaction).await.expect("Persist failed");
         let transaction_id = transaction.transaction_id.clone();
 
         //Now we need to get the event from storage, and let it go through the signing procees
@@ -99,7 +85,7 @@ mod broadcaster_tests {
             .with_status(TransactionStatus::Signed);
 
         if let Some(event_created) = TransactionEventFactory::process_event(&event_created, &updated_tx).unwrap_or(None) {
-            tem.persist_dual(&event_created).await.ok();
+            tem.clone().persist(&event_created).await.ok();
             info!("📝 Broadcast event persisted");
         }
         // Push correct message onto SQS queue
@@ -117,6 +103,6 @@ mod broadcaster_tests {
 
         // Check DynamoDB status updated correctly
         let event_after = tem.get_latest_event(&transaction_id).await.unwrap();
-        assert_eq!(event_after.status, TransactionStatus::Broadcasted);
+        assert_eq!(event_after.status, TransactionStatus::Pending);
     }
 }

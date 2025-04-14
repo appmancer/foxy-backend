@@ -7,6 +7,8 @@ use aws_sdk_sts::types::Credentials as StsCredentials;
 use aws_config::sts::AssumeRoleProvider;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_cloudwatch::{Client as CloudWatchClient};
+use once_cell::sync::OnceCell;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 const ROLE_ARN: &str = "arn:aws:iam::971422686568:role/Foxy-dev-Lambda-ExecutionRole";
 const SQS_ROLE_ARN: &str = "arn:aws:iam::971422686568:role/Foxy-dev-FoxyLambdaSQSRole";
@@ -110,4 +112,17 @@ pub async fn get_cloudwatch_client_with_assumed_role() -> Result<CloudWatchClien
         .await;
 
     Ok(CloudWatchClient::new(&shared_config))
+}
+static INIT: OnceCell<()> = OnceCell::new();
+
+pub fn init_tracing() {
+    INIT.get_or_init(|| {
+        let subscriber = FmtSubscriber::builder()
+            .with_env_filter(EnvFilter::from_default_env()) // optionally set RUST_LOG
+            .with_test_writer() // required to capture test output
+            .finish();
+
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("Failed to set global tracing subscriber");
+    });
 }

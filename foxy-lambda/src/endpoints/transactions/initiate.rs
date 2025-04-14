@@ -85,7 +85,10 @@ async fn handle_transaction_initiation(
 
         match builder.build(&cognito_client, &dynamo_db_client).await {
             Ok(mut transaction) => {
-                let manager = TransactionEventManager::new(Arc::new(dynamo_db_client.clone()), get_transaction_event_table());
+                let manager = TransactionEventManager::new(
+                                                        Arc::new(dynamo_db_client.clone()),
+                                                        get_transaction_event_table(),
+                                                    );
                 manager.persist_initial_event(&mut transaction).await?;
 
                 //We need to return an unsigned transactions

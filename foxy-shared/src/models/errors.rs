@@ -9,6 +9,9 @@ use aws_sdk_cognitoidentityprovider::error::SdkError;
 use aws_sdk_cognitoidentityprovider::operation::list_users::ListUsersError;
 use aws_sdk_sts::config::http::HttpResponse;
 use crate::database::errors::DynamoDbError;
+use aws_sdk_dynamodb::error::SdkError as DynamoError;
+use ethers_providers::ProviderError;
+use serde_json::Error as SerdeJsonError;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AuthorizationError {
@@ -349,4 +352,46 @@ pub enum NonceError {
 
     #[error("Unexpected RPC response format")]
     InvalidResponse,
+}
+
+#[derive(Error, Debug)]
+pub enum AppError {
+    #[error("AWS DynamoDB error: {0}")]
+    DynamoDb(String),
+
+    #[error("Ethereum provider error: {0}")]
+    Provider(#[from] ProviderError),
+
+    #[error("Reqwest error: {0}")]
+    Http(#[from] ReqwestError),
+
+    #[error("JSON serialization error: {0}")]
+    Json(#[from] SerdeJsonError),
+
+    #[error("Missing environment variable: {0}")]
+    MissingEnv(String),
+
+    #[error("Parse error: {0}")]
+    ParseError(#[from] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("Transaction logic error: {0}")]
+    Logic(String),
+
+    #[error("Unknown error: {0}")]
+    Unknown(String),
+}
+
+impl From<std::env::VarError> for AppError {
+    fn from(err: std::env::VarError) -> Self {
+        AppError::MissingEnv(err.to_string())
+    }
+}
+
+impl<T> From<DynamoError<T>> for AppError
+where
+    T: std::error::Error + Send + Sync + 'static,
+{
+    fn from(err: DynamoError<T>) -> Self {
+        AppError::DynamoDb(err.to_string())
+    }
 }
