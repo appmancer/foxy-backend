@@ -2,12 +2,12 @@ use serde_json::Value;
 use reqwest::Client;
 use serde_json::json;
 use foxy_shared::services::authentication::generate_tokens;
-use dotenv::dotenv;
+use foxy_shared::utilities::config;
 use foxy_shared::utilities::test::get_cognito_client_with_assumed_role;
 #[tokio::test]
 async fn test_transaction_initiate_success() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = dotenv().is_ok();
-    let api_url = "http://localhost:9000";
+    config::init();
+    let api_url = "http://localhost:9000/lambda-url/foxy-lambda";
     let url = format!("{}/transactions/initiate", api_url);
     let client = Client::new();
 

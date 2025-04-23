@@ -7,7 +7,7 @@ use foxy_shared::utilities::test::get_cognito_client_with_assumed_role;
 #[tokio::test]
 async fn test_transaction_estimate_success() -> Result<(), Box<dyn std::error::Error>>{
     let _ = dotenv().is_ok();
-    let api_url = "http://localhost:9000";
+    let api_url = "http://localhost:9000/lambda-url/foxy-lambda";
     let url = format!("{}/transactions/estimate", api_url);
     let client = Client::new();
 
@@ -128,7 +128,7 @@ async fn test_transaction_estimate_success() -> Result<(), Box<dyn std::error::E
 #[tokio::test]
 async fn test_transaction_estimate_invalid_recipient_address() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenv().is_ok();
-    let api_url = "http://localhost:9000";
+    let api_url = "http://localhost:9000/lambda-url/foxy-lambda";
     let url = format!("{}/transactions/estimate", api_url);
     let client = Client::new();
 
@@ -162,7 +162,7 @@ async fn test_transaction_estimate_invalid_recipient_address() -> Result<(), Box
 #[tokio::test]
 async fn test_transaction_estimate_insufficient_funds() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenv().is_ok();
-    let api_url = "http://localhost:9000";
+    let api_url = "http://localhost:9000/lambda-url/foxy-lambda";
     let url = format!("{}/transactions/estimate", api_url);
     let client = Client::new();
 
@@ -200,7 +200,7 @@ async fn test_transaction_estimate_insufficient_funds() -> Result<(), Box<dyn st
 #[tokio::test]
 async fn test_transaction_estimate_invalid_token_type() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenv().is_ok();
-    let api_url = "http://localhost:9000";
+    let api_url = "http://localhost:9000/lambda-url/foxy-lambda";
     let url = format!("{}/transactions/estimate", api_url);
     let client = Client::new();
 
@@ -234,7 +234,7 @@ async fn test_transaction_estimate_invalid_token_type() -> Result<(), Box<dyn st
 #[tokio::test]
 async fn test_transaction_estimate_unsupported_fiat_currency() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenv().is_ok();
-    let api_url = "http://localhost:9000";
+    let api_url = "http://localhost:9000/lambda-url/foxy-lambda";
     let url = format!("{}/transactions/estimate", api_url);
     let client = Client::new();
 

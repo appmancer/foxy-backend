@@ -27,22 +27,21 @@ In Foxy, a **transaction** represents a user-initiated intent to send a fixed fi
 This structure provides the best balance between transparency, user experience, and network efficiency. Both transactions are recorded as part of a single logical Foxy transaction and surfaced cleanly in the UI.
 
 ### 🧾 Foxy Transaction Lifecycle Mapping
+| EventType | BundleStatus    | Main Tx Status | Fee Tx Status |
+|-----------|-----------------|-------------|---------------|
+| Initiate  | `Initiated`     | `Created`   | `Created`     |
+| Sign      | `Signed`        | `Signed`    | `Signed`      |
+| Broadcast | `Signed`        | `Pending`   | `Signed`      |
+| Confirm   | `MainConfirmed` | `Confirmed` | `Signed`      |
+| Broadcast | `MainConfirmed` | `Confirmed` | `Pending`     |
+| Confirm   | `Completed`     | `Confirmed` | `Confirmed`   |
+| Fail      | `Failed`        | `Failed`    | `Signed`      |
+| Fail      | `Failed`        | `Confirmed` | `Failed`      |
+| Cancel    | `Cancelled`     | `Cancelled` | `Cancelled`   |
+| Error     | `Errored`       | `Error`     | `Signed`      |
+| Error     | `Errored`       | `Confirmed` | `Error`       |
 
-| EventType | Triggers Status | Triggered By | Applies To | Description |
-| --- | --- | --- | --- | --- |
-| Creation | Created | Client (initial request) | Both | George initiates a payment to Andrew. TransactionRequest is submitted. |
-| Signing | Signed | Client | Both | George signs the payload and returns a signature. |
-| Broadcasting | Broadcasted | Backend | Recipient Tx or Fee Tx | Foxy pushes the signed transaction to the Optimism network. |
-| Confirmation | Confirmed | Network | Recipient Tx or Fee Tx | Transaction gets 1 confirmation (mined). |
-| Finalization | Finalized | Network | Recipient Tx or Fee Tx | Transaction has multiple confirmations (fully immutable). |
-| Failure | Failed | Backend (via network feedback) | Recipient Tx or Fee Tx | Execution error, e.g., insufficient gas, reversion. |
-| Cancellation | Cancelled | Client/System | Both | User or backend cancels the transaction (e.g., timeout). |
-| Erroring | Error | Backend | Both | Unrecoverable system/network failure. |
-| Deposit | Deposited | Network | Recipient Tx | Cross-chain: ETH/USDC moved from L1 to Optimism (rare for P2P). |
-| Finalizing | Finalizing | Network | Recipient Tx | Optimism-specific: in fraud-proof window. |
-| Withdrawal | Withdrawn | Network | Recipient Tx | Funds moved from L2 → L1. |
-| Challenge | ChallengePeriod | Network | Recipient Tx | Transaction in dispute during the challenge window. |
-| Bridging | Bridging | Network | Either | Long-lived bridging operation in flight (L1 ↔ L2). |
+
 
 ### 🔁 Dual-Transaction Flow Notes
 

@@ -1,7 +1,8 @@
+use http::StatusCode;
 use lambda_http::{Body, Request, Response};
 use lambda_http::RequestExt;
-use crate::endpoints::{test, wallet, status, phone, auth, transactions};
-use foxy_shared::utilities::responses::{success_response, error_response};
+use crate::endpoints::{test, wallet, status, phone, auth, transactions, keys};
+use foxy_shared::utilities::responses::{success_response, error_response, response_with_code};
 use foxy_shared::utilities::requests::extract_body;
 
 const GET: &str = "GET";
@@ -26,6 +27,9 @@ pub async fn handle_lambda(event: Request) -> Result<Response<Body>, lambda_http
         (POST, "/auth/validate") => auth::validate::handler(event_body).await,
         (POST, "/auth/refresh") => auth::refresh::handler(event_body).await,
 
+        //Encryption
+        (POST, "/derive-key") => keys::handler(event, event_body).await,
+
         //Wallet
         (POST, "/wallet/create") => wallet::create::handler(event, event_body).await,
         (GET, "/wallet/fetch") => wallet::fetch::handler(event).await,
@@ -41,7 +45,7 @@ pub async fn handle_lambda(event: Request) -> Result<Response<Body>, lambda_http
         (POST, "/transactions/commit") => transactions::commit::handler(event, event_body).await,
 
         //Not found
-        _ => error_response("Not Found"),
+        _ => response_with_code("Not Found", StatusCode::NOT_FOUND),
     }
 }
 

@@ -4,3 +4,4 @@ pub mod wallet;
 pub mod transactions;
 pub mod phone;
 pub mod auth;
+pub mod keys;
