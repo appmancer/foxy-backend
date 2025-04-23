@@ -16,6 +16,14 @@ pub fn init() {
 pub fn get_env_var(key: &str) -> String {
     env::var(key).unwrap_or_else(|_| panic!("Environment variable {} must be set", key))
 }
+pub fn get_key_store() -> String {
+    get_env_var("KEY_STORE")
+}
+
+pub fn get_environment() -> String {
+    get_env_var("ENVIRONMENT")
+}
+
 //Get table names
 pub fn get_transaction_event_table() -> String {
     get_env_var("EVENT_STORE_TABLE_NAME")
@@ -70,6 +78,10 @@ pub fn get_broadcast_queue() -> String {
 pub fn get_visibility_timeout() -> String {
     //when you know you want the test network
     get_env_var("VISIBILITY_TIMEOUT_SECS")
+}
+
+pub fn get_foxy_wallet() -> String {
+    get_env_var("FOXY_WALLET_ADDRESS")
 }
 
 pub fn get_chain_id() -> u64 {

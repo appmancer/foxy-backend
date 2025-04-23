@@ -3,6 +3,10 @@ name = "foxy-shared"
 version = "0.1.0"
 edition = "2024"
 
+[build]
+incremental = true
+rustflags = ["-C", "incremental=target/incremental"]
+
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
 lambda_http = "0.13.0"
@@ -20,6 +24,7 @@ aws-sdk-cognitoidentityprovider = "1.73.0"
 aws-config = { version = "1.5.10", features = ["behavior-version-latest"] }
 aws-sdk-sts = "1.62.0"
 aws-sdk-sqs = "1.64.0"
+aws-sdk-secretsmanager = "1.68.0"
 aws-smithy-types = "1.3.0"
 rand = "0.8"
 base64 = "0.22.1"

@@ -5,8 +5,7 @@ use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use aws_sdk_dynamodb::operation::query::QueryOutput;
 use aws_sdk_dynamodb::types::Select;
 use base64::Engine;
-use crate::models::transactions::{Transaction, TransactionStatus};
-use crate::state_machine::transaction_event_factory::TransactionEvent;
+use crate::models::transactions::{Transaction, TransactionEvent, TransactionStatus};
 use crate::database::transaction_event::TransactionEventManager;
 use tracing::{debug, info};
 
@@ -28,7 +27,7 @@ impl TransactionStatusViewManager {
 
     pub async fn project(&self, transaction_id: &str) -> Result<(), anyhow::Error> {
         let latest_event = self.tem.get_latest_event(transaction_id).await?;
-        let tx = &latest_event.transaction;
+        let tx = &latest_event.bundle_snapshot.main_tx;
 
         let item = self.to_dynamo_item(&latest_event, tx)?;
 
@@ -39,7 +38,7 @@ impl TransactionStatusViewManager {
             .send()
             .await?;
 
-        info!(tx_id = %transaction_id, status = ?latest_event.status, "📌 Projected status view");
+        info!(tx_id = %transaction_id, status = ?latest_event.bundle_status, "📌 Projected status view");
         Ok(())
     }
 
@@ -49,8 +48,13 @@ impl TransactionStatusViewManager {
         tx: &Transaction,
     ) -> Result<std::collections::HashMap<String, AttributeValue>, anyhow::Error> {
         let mut item = std::collections::HashMap::new();
+        let status_str = event.bundle_status
+            .as_ref()
+            .expect("missing bundle status")
+            .to_string();
+
         item.insert("PK".to_string(), AttributeValue::S(format!("Transaction#{}", tx.transaction_id)));
-        item.insert("Status".to_string(), AttributeValue::S(event.status.to_string()));
+        item.insert("Status".to_string(), AttributeValue::S(status_str));
         item.insert("UpdatedAt".to_string(), AttributeValue::S(event.created_at.to_rfc3339()));
         item.insert("UserID".to_string(), AttributeValue::S(event.user_id.clone()));
 

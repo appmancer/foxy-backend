@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 use crate::database::errors::DynamoDbError;
-use crate::models::transactions::{EventType, Transaction, TransactionStatus};
-use crate::state_machine::transaction_event_factory::{TransactionEvent, TransactionEventFactory};
+use crate::models::transactions::{BundleStatus, EventType, TransactionBundle, TransactionEvent, TransactionLeg, TransactionStatus};
 use crate::utilities::config::get_transaction_view_table;
 use crate::views::status_view::TransactionStatusViewManager;
 
@@ -23,11 +22,10 @@ impl TransactionEventManager {
     pub fn client(&self) -> Arc<DynamoDbClient> {
         self.client.clone()
     }
-
     pub async fn persist(
         self: Arc<Self>,
         event: &TransactionEvent,
-    ) -> Result<(), DynamoDbError> {
+    ) -> Result<String, DynamoDbError> {
         if !event.event_id.is_empty() {
             return Err(DynamoDbError::AlreadyPersisted(format!(
                 "Attempted to persist an event that already has event_id: {}",
@@ -36,6 +34,12 @@ impl TransactionEventManager {
         }
 
         let item = self.to_dynamo_item(event)?;
+
+        //TODO: We should create constants for item fields
+        let event_id_str = item.get("EventID")
+            .and_then(|v| v.as_s().ok())
+            .ok_or_else(|| DynamoDbError::Deserialization("Missing or invalid EventID".into()))?
+            .to_string();
 
         self.client
             .put_item()
@@ -51,11 +55,11 @@ impl TransactionEventManager {
             self.clone(),
         );
 
-        if let Err(e) = projector.project(&event.transaction_id).await {
+        if let Err(e) = projector.project(&event.bundle_id).await {
             tracing::error!(?e, "Failed to project status view");
         }
 
-        Ok(())
+        Ok(event_id_str)
     }
 
     fn to_dynamo_item(
@@ -65,41 +69,53 @@ impl TransactionEventManager {
         let mut item = HashMap::new();
         let event_id = Uuid::new_v4().to_string();
         let timestamp = Utc::now().to_rfc3339();
-        let transaction_json = serde_json::to_string(event.transaction())
+
+        let bundle_json = serde_json::to_string(&event.bundle_snapshot)
             .map_err(|e| DynamoDbError::Serialization(e.to_string()))?;
 
-        item.insert("PK".to_string(), AttributeValue::S(format!("Transaction#{}", event.transaction_id)));
+        item.insert("PK".to_string(), AttributeValue::S(format!("Bundle#{}", event.bundle_id)));
         item.insert("SK".to_string(), AttributeValue::S(format!("Event#{}", timestamp)));
+
         item.insert("EventID".to_string(), AttributeValue::S(event_id));
-        item.insert("TransactionID".to_string(), AttributeValue::S(event.transaction_id.clone()));
         item.insert("UserID".to_string(), AttributeValue::S(event.user_id.clone()));
         item.insert("EventType".to_string(), AttributeValue::S(event.event_type.to_string()));
-        item.insert("Status".to_string(), AttributeValue::S(event.status.to_string()));
-        item.insert("SenderAddress".to_string(), AttributeValue::S(event.sender_address.clone()));
-        item.insert("RecipientAddress".to_string(), AttributeValue::S(event.recipient_address.clone()));
         item.insert("CreatedAt".to_string(), AttributeValue::S(timestamp));
-        item.insert("Transaction".to_string(), AttributeValue::S(transaction_json));
+        item.insert("BundleSnapshot".to_string(), AttributeValue::S(bundle_json));
+
+        if let Some(leg) = event.leg {
+            item.insert("Leg".to_string(), AttributeValue::S(leg.to_string()));
+        }
+
+        if let Some(tx_status) = &event.transaction_status {
+            item.insert("TransactionStatus".to_string(), AttributeValue::S(tx_status.to_string()));
+        }
+
+        if let Some(bundle_status) = &event.bundle_status {
+            item.insert("BundleStatus".to_string(), AttributeValue::S(bundle_status.to_string()));
+        }
 
         Ok(item)
     }
 
-    pub async fn persist_initial_event(self: Arc<Self>, transaction: &mut Transaction) -> Result<(), DynamoDbError> {
-        transaction.transaction_id = Uuid::new_v4().to_string();
-        let event = TransactionEventFactory::initial_event(transaction.clone());
-
-        self.persist(&event).await?;
-        Ok(())
+    pub async fn persist_initial_event(self: Arc<Self>, bundle: &TransactionBundle) -> Result<(), DynamoDbError> {
+        match TransactionEvent::initiate(bundle.clone()){
+            Ok(event) => {
+                self.persist(&event).await?;
+                Ok(())
+            }
+            Err(e) => { Err(DynamoDbError::DynamoDbOperation(format!("Unable to persist event: {}", e)))}
+        }
     }
 
     pub async fn get_latest_event(
         &self,
-        transaction_id: &str,
+        bundle_id: &str,
     ) -> Result<TransactionEvent, DynamoDbError> {
         let result = self.client
             .query()
             .table_name(&self.table_name)
             .key_condition_expression("PK = :pk")
-            .expression_attribute_values(":pk", AttributeValue::S(format!("Transaction#{}", transaction_id)))
+            .expression_attribute_values(":pk", AttributeValue::S(format!("Bundle#{}", bundle_id)))
             .scan_index_forward(false)
             .limit(1)
             .send()
@@ -111,63 +127,57 @@ impl TransactionEventManager {
             .and_then(|items| items.first())
             .ok_or_else(|| DynamoDbError::NotFound)?;
 
-        let event_type_str = item.get("EventType")
+        let event_type = item.get("EventType")
             .and_then(|v| v.as_s().ok())
-            .ok_or_else(|| DynamoDbError::Deserialization("Missing EventType".into()))?
-            .to_string();
+            .ok_or_else(|| DynamoDbError::Deserialization("Missing EventType".into()))
+            .and_then(|s| s.parse::<EventType>().map_err(|_| DynamoDbError::Deserialization(format!("Invalid EventType: {}", s))))?;
 
-        let event_type = event_type_str
-            .parse::<EventType>()
-            .map_err(|_| DynamoDbError::Deserialization(format!("Invalid status: {}", event_type_str)))?;
-
-        let status_str = item.get("Status")
+        let bundle_status = item.get("BundleStatus")
             .and_then(|v| v.as_s().ok())
-            .ok_or_else(|| DynamoDbError::Deserialization("Missing Status".into()))?;
+            .map(|s| s.parse::<BundleStatus>())
+            .transpose()
+            .map_err(|e| DynamoDbError::Deserialization(format!("Invalid BundleStatus: {}", e)))?;
 
-        let status = status_str
-            .parse::<TransactionStatus>()
-            .map_err(|_| DynamoDbError::Deserialization(format!("Invalid status: {}", status_str)))?;
-
-        let sender_address = item.get("SenderAddress")
+        let transaction_status = item.get("TransactionStatus")
             .and_then(|v| v.as_s().ok())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "".to_string());
+            .map(|s| s.parse::<TransactionStatus>())
+            .transpose()
+            .map_err(|e| DynamoDbError::Deserialization(format!("Invalid TransactionStatus: {}", e)))?;
 
-        let recipient_address = item.get("RecipientAddress")
+        let leg = item.get("Leg")
             .and_then(|v| v.as_s().ok())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "".to_string());
+            .map(|s| s.parse::<TransactionLeg>())
+            .transpose()
+            .map_err(|e| DynamoDbError::Deserialization(format!("Invalid Leg: {}", e)))?;
 
         let user_id = item.get("UserID")
+            .and_then(|v| v.as_s().ok().map(ToOwned::to_owned))
+            .unwrap_or_default();
+
+        let created_at = item.get("CreatedAt")
             .and_then(|v| v.as_s().ok())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "".to_string());
+            .ok_or_else(|| DynamoDbError::Deserialization("Missing CreatedAt".into()))
+            .and_then(|s| DateTime::parse_from_rfc3339(s).map_err(|e| DynamoDbError::Deserialization(format!("Invalid CreatedAt format: {}", e))))
+            .map(|dt| dt.with_timezone(&Utc))?;
 
-        let created_at_str = item.get("CreatedAt")
+        let bundle_json = item.get("BundleSnapshot")
             .and_then(|v| v.as_s().ok())
-            .ok_or_else(|| DynamoDbError::Deserialization("Missing CreatedAt".into()))?;
+            .ok_or_else(|| DynamoDbError::Deserialization("Missing BundleSnapshot".into()))?;
 
-        let created_at = DateTime::parse_from_rfc3339(created_at_str)
-            .map_err(|e| DynamoDbError::Deserialization(format!("Invalid CreatedAt format: {}", e)))?
-            .with_timezone(&Utc);
-
-        let transaction_json = item.get("Transaction")
-            .and_then(|v| v.as_s().ok())
-            .ok_or_else(|| DynamoDbError::Deserialization("Missing Transaction field".into()))?;
-
-        let transaction: Transaction = serde_json::from_str(transaction_json)
+        let bundle_snapshot: TransactionBundle = serde_json::from_str(bundle_json)
             .map_err(|e| DynamoDbError::Deserialization(e.to_string()))?;
 
         Ok(TransactionEvent {
-            event_id: String::new(),
-            transaction_id: transaction_id.to_string(),
+            event_id: String::new(), // Not returned from DB, can be ignored here or fetched separately
+            bundle_id: bundle_id.to_string(),
             user_id,
             event_type,
-            status,
-            sender_address,
-            recipient_address,
-            transaction,
-            created_at
+            leg,
+            bundle_status,
+            transaction_status,
+            created_at,
+            bundle_snapshot,
         })
     }
+
 }

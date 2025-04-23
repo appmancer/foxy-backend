@@ -7,6 +7,7 @@ use aws_sdk_sts::types::Credentials as StsCredentials;
 use aws_config::sts::AssumeRoleProvider;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_cloudwatch::{Client as CloudWatchClient};
+use aws_sdk_secretsmanager::Client as SecretsManagerClient;
 use once_cell::sync::OnceCell;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -113,6 +114,31 @@ pub async fn get_cloudwatch_client_with_assumed_role() -> Result<CloudWatchClien
 
     Ok(CloudWatchClient::new(&shared_config))
 }
+
+pub async fn get_secrets_client_with_assumed_role() -> Result<SecretsManagerClient, Box<dyn std::error::Error>> {
+    let creds = assume_role(ROLE_ARN).await?;
+    let region_provider = RegionProviderChain::default_provider();
+
+    // Directly convert &str to String without `ok_or_else`
+    let access_key = creds.access_key_id().to_string();
+    let secret_key = creds.secret_access_key().to_string();
+    let session_token = creds.session_token().to_string();
+
+    let shared_config = aws_config::from_env()
+        .region(region_provider)
+        .credentials_provider(Credentials::new(
+            access_key,
+            secret_key,
+            Some(session_token),
+            None,
+            "CloudwatchAssumedRole",
+        ))
+        .load()
+        .await;
+
+    Ok(SecretsManagerClient::new(&shared_config))
+}
+
 static INIT: OnceCell<()> = OnceCell::new();
 
 pub fn init_tracing() {

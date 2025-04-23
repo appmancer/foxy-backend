@@ -75,6 +75,8 @@ pub enum TransactionError {
     InvalidTransactionValue,
     InvalidNetworkFee,
     InvalidServiceFee,
+    MissingFeeTransaction,
+    MissingMainTransaction,
 
     // System & Processing Errors
     GasPriceUnavailable(String),                  // Could not fetch gas price
@@ -84,6 +86,7 @@ pub enum TransactionError {
     DatabaseError(String),                 // Failure storing or retrieving transaction data
     Unauthorized,                           // User is not authorized for this action
     StateMachine(String),
+    InvalidTransition(String),
 
     // External Dependencies
     RateLimitExceeded,                      // API rate limits from third-party services
@@ -111,6 +114,8 @@ impl fmt::Display for TransactionError {
             TransactionError::InvalidTransactionValue => write!(f, "Invalid transaction value."),
             TransactionError::InvalidNetworkFee => write!(f, "Invalid network fee."),
             TransactionError::InvalidServiceFee => write!(f, "Invalid service fee."),
+            TransactionError::MissingFeeTransaction => write!(f, "Missing fee transaction."),
+            TransactionError::MissingMainTransaction => write!(f, "Missing main transaction."),
 
             // System & Processing Errors
             TransactionError::GasPriceUnavailable(msg) => write!(f, "Could not fetch gas price: {}", msg),
@@ -120,6 +125,7 @@ impl fmt::Display for TransactionError {
             TransactionError::DatabaseError(msg) => write!(f, "Database error: {}", msg),
             TransactionError::Unauthorized => write!(f, "Unauthorized request."),
             TransactionError::StateMachine(msg) => write!(f, "State machine error: {}", msg),
+            TransactionError::InvalidTransition(msg) => write!(f, "Invalid Transition: {}", msg),
 
             // External Dependencies
             TransactionError::RateLimitExceeded => write!(f, "Rate limit exceeded. Please try again later."),
@@ -189,6 +195,7 @@ pub enum WalletError {
     InvalidWalletAddress,
     WalletAlreadyExists,
     CognitoUpdateFailed(String),
+    DatabaseUpdateFailed(String),
     MissingWallet(String),
     Network(String),
     InvalidResponse(String),
@@ -201,6 +208,7 @@ impl fmt::Display for WalletError {
             WalletError::InvalidWalletAddress => write!(f, "Invalid wallet address format."),
             WalletError::WalletAlreadyExists => write!(f, "A wallet already exists for this user."),
             WalletError::CognitoUpdateFailed(msg) => write!(f, "Failed to update Cognito: {}", msg),
+            WalletError::DatabaseUpdateFailed(msg) => write!(f, "Failed to update database: {}", msg),
             WalletError::MissingToken => write!(f, "Authorization token is missing."),
             WalletError::InvalidToken(_) => write!(f, "Authorization token is invalid."),
             WalletError::MissingWallet(msg) => write!(f, "Wallet not found: {}", msg),
@@ -219,8 +227,19 @@ impl From<AuthorizationError> for WalletError {
     }
 }
 
-impl std::error::Error for WalletError {}
+impl From<DynamoDbError> for WalletError {
+    fn from(err: DynamoDbError) -> Self {
+        WalletError::DatabaseUpdateFailed(format!("{:?}", err))
+    }
+}
 
+impl From<PhoneNumberError> for WalletError {
+    fn from(err: PhoneNumberError) -> Self {
+        WalletError::DatabaseUpdateFailed(format!("{:?}", err))
+    }
+}
+
+impl std::error::Error for WalletError {}
 
 #[derive(Serialize, Deserialize)]
 pub enum ValidateError {

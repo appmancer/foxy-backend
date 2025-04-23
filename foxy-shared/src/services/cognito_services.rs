@@ -4,10 +4,10 @@ use aws_sdk_dynamodb::Client as DynamoDbClient;
 use serde_json::Value;
 use crate::models::auth::UserProfile;
 use crate::models::errors::{CognitoError, ValidateError};
-use crate::models::transactions::PartyDetails;
 use crate::utilities::{config, security, fields::cognito};
 use std::iter::*;
 use crate::database::dynamo_identity::get_user_id_from_wallet_address;
+use crate::models::transactions::PartyDetails;
 use crate::services::cloudwatch_services::OperationMetricTracker;
 use crate::track_ok;
 
