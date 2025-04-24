@@ -33,6 +33,10 @@ pub fn get_transaction_view_table() -> String {
     get_env_var("MATERIALIZED_VIEW_NAME")
 }
 
+pub fn get_history_view_table() -> String {
+    get_env_var("HISTORY_MATERIALIZED_VIEW_NAME")
+}
+
 pub fn get_user_lookup_table() -> String {
     get_env_var("DYNAMODB_USER_LOOKUP_TABLE_NAME")
 }

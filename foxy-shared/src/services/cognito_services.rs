@@ -119,6 +119,7 @@ pub async fn get_party_details_from_wallet(
 
     // Step 3: Return PartyDetails with user name and wallet
     Ok(PartyDetails {
+        user_id: user_id.to_string(),
         name: user_profile.name.unwrap_or_default(),
         wallet: wallet.to_string(),
     })

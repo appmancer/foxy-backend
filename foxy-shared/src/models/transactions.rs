@@ -74,7 +74,6 @@ impl TransactionBundle {
             .gas_pricing
             .as_ref()
             .ok_or_else(|| TransactionError::MissingGasEstimate)?;
-
         let fee_tx_value = request.service_fee + request.network_fee;
 
         let nonces = NonceManager::new()?;
@@ -89,7 +88,7 @@ impl TransactionBundle {
             request.fiat_value,
             request.fiat_currency_code.clone(),
             nonce + 1, //perform the main transaction first
-        );
+        ).with_gas_pricing(gas_pricing);
 
         let main_tx = Transaction::new(
             user_id.clone(),
@@ -100,7 +99,7 @@ impl TransactionBundle {
             request.fiat_value,
             request.fiat_currency_code.clone(),
             nonce,
-        );
+        ).with_gas_pricing(gas_pricing);
 
         let metadata = BundleMetadata {
             display_currency: request.fiat_currency_code,
@@ -857,6 +856,7 @@ pub struct TransactionEstimateResponse {
 /// Detailed information about sender and recipient
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PartyDetails {
+    pub user_id: String,
     pub name: String,
     pub wallet: String,
 }
@@ -864,6 +864,7 @@ pub struct PartyDetails {
 impl Default for PartyDetails {
     fn default() -> Self {
         Self {
+            user_id: Uuid::default().to_string(),
             name: "Anonymous".to_string(),
             wallet: "0x0000000000000000000000000000000000000000".to_string(),
         }
@@ -913,6 +914,98 @@ impl TryFrom<GasPricing> for GasEstimate {
         })
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    Incoming,
+    Outgoing,
+}
+
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Direction::Incoming => write!(f, "incoming"),
+            Direction::Outgoing => write!(f, "outgoing"),
+        }
+    }
+}
+
+impl FromStr for Direction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "incoming" => Ok(Direction::Incoming),
+            "outgoing" => Ok(Direction::Outgoing),
+            _ => Err(format!("Invalid direction: {}", s)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionHistoryItem {
+    pub bundle_id: String,
+
+    pub direction: Direction, // Incoming or Outgoing
+    pub status: TransactionStatus,
+
+    pub amount: f64,
+    pub token: String,
+
+    pub counterparty: PartyDetails,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+
+    pub timestamp: String, // ISO8601, e.g., "2025-04-23T12:01:00Z"
+}
+
+impl TransactionHistoryItem {
+    pub fn from_event_and_user(
+        event: &TransactionEvent,
+        current_user_id: &str,
+    ) -> Option<Self> {
+        let bundle = &event.bundle_snapshot;
+        let metadata = bundle.metadata.as_ref()?;
+
+        // Safely unwrap both sides
+        let sender = metadata.sender.as_ref()?;
+        let recipient = metadata.recipient.as_ref()?;
+
+        let (direction, counterparty) = if sender.user_id == current_user_id {
+            (Direction::Outgoing, recipient.clone())
+        } else if recipient.user_id == current_user_id {
+            (Direction::Incoming, sender.clone())
+        } else {
+            return None; // Not relevant to this user
+        };
+
+        Some(TransactionHistoryItem {
+            bundle_id: bundle.bundle_id.clone(),
+            direction,
+            status: match event.bundle_status {
+                Some(BundleStatus::Initiated) => TransactionStatus::Created,
+                Some(BundleStatus::Signed) => TransactionStatus::Signed,
+                Some(BundleStatus::MainConfirmed) | Some(BundleStatus::Completed) => TransactionStatus::Confirmed,
+                Some(BundleStatus::Failed) => TransactionStatus::Failed,
+                Some(BundleStatus::Cancelled) => TransactionStatus::Cancelled,
+                Some(BundleStatus::Errored) => TransactionStatus::Error,
+                None => TransactionStatus::Created,
+            },
+            amount: bundle.main_tx.transaction_value as f64 / 1e18, // ETH conversion (18 decimals)
+            token: bundle.main_tx.token_type.to_string(),
+            tx_hash: bundle.main_tx.transaction_hash.clone(),
+            message: metadata.message.clone(),
+            timestamp: event.created_at.to_rfc3339(),
+            counterparty,
+        })
+    }
+}
+
 
 
 #[cfg(test)]
@@ -1247,4 +1340,85 @@ mod tests {
         assert_eq!(unsigned.nonce, "7");
         assert_eq!(unsigned.token_decimals, 18);
     }
+
+    #[test]
+    fn test_transaction_history_item_from_event_and_user() {
+        use chrono::Utc;
+        config::init();
+
+        let sender = PartyDetails {
+            user_id: "george123".into(),
+            name: "George Michael".into(),
+            wallet: "0xgeorge".into(),
+        };
+
+        let recipient = PartyDetails {
+            user_id: "andrew456".into(),
+            name: "Andrew Ridgeley".into(),
+            wallet: "0xandrew".into(),
+        };
+
+        let metadata = BundleMetadata {
+            display_currency: "GBP".into(),
+            expected_currency_amount: 2000,
+            message: Some("Thanks for the pizza!".into()),
+            sender: Some(sender.clone()),
+            recipient: Some(recipient.clone()),
+            app_version: None,
+            location: None,
+            service_fee: 0,
+            network_fee: 0,
+            exchange_rate: 2300.0,
+            gas_pricing: GasPricing::default(),
+        };
+
+        let main_tx = Transaction::new(
+            sender.user_id.clone(),
+            sender.wallet.clone(),
+            recipient.wallet.clone(),
+            1000000000000000000,
+            TokenType::ETH,
+            2000,
+            "GBP".into(),
+            1,
+        ).with_transaction_hash("0xabc123");
+
+        let fee_tx = main_tx.clone(); // not relevant to this test
+
+        let bundle = TransactionBundle {
+            bundle_id: "bundle-xyz".into(),
+            user_id: sender.user_id.clone(),
+            status: BundleStatus::Completed,
+            fee_tx,
+            main_tx,
+            metadata: Some(metadata),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let event = TransactionEvent {
+            event_id: "event-1".into(),
+            bundle_id: bundle.bundle_id.clone(),
+            user_id: sender.user_id.clone(),
+            event_type: EventType::Confirm,
+            leg: Some(TransactionLeg::Main),
+            created_at: Utc::now(),
+            bundle_status: Some(BundleStatus::Completed),
+            transaction_status: Some(TransactionStatus::Confirmed),
+            bundle_snapshot: bundle,
+        };
+
+        let item = TransactionHistoryItem::from_event_and_user(&event, &sender.user_id)
+            .expect("should return a valid projection");
+
+        assert_eq!(item.bundle_id, "bundle-xyz");
+        assert_eq!(item.direction, Direction::Outgoing);
+        assert_eq!(item.counterparty.user_id, "andrew456");
+        assert_eq!(item.status, TransactionStatus::Confirmed);
+        assert_eq!(item.token, "ETH");
+        assert_eq!(item.tx_hash.as_deref(), Some("0xabc123"));
+        assert_eq!(item.message.as_deref(), Some("Thanks for the pizza!"));
+    }
+
+
 }

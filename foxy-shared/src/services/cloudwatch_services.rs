@@ -158,6 +158,7 @@ macro_rules! track_ok {
     }};
 }
 
+#[derive(Clone, Debug)]
 pub struct OperationMetricTracker {
     cloudwatch: CloudWatchClient,
     start: Instant,

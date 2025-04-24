@@ -5,7 +5,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 use crate::database::errors::DynamoDbError;
 use crate::models::transactions::{BundleStatus, EventType, TransactionBundle, TransactionEvent, TransactionLeg, TransactionStatus};
-use crate::utilities::config::get_transaction_view_table;
+use crate::utilities::config::{get_history_view_table, get_transaction_view_table};
+use crate::views::history_view::TransactionHistoryViewManager;
 use crate::views::status_view::TransactionStatusViewManager;
 
 pub struct TransactionEventManager {
@@ -57,6 +58,15 @@ impl TransactionEventManager {
 
         if let Err(e) = projector.project(&event.bundle_id).await {
             tracing::error!(?e, "Failed to project status view");
+        }
+
+        let history_view = TransactionHistoryViewManager::new(
+            get_history_view_table(), // <- you'll define this like you do get_transaction_view_table()
+            self.client.clone(),
+        );
+
+        if let Err(e) = history_view.project_from_event(event).await {
+            tracing::error!(?e, "Failed to project history view");
         }
 
         Ok(event_id_str)

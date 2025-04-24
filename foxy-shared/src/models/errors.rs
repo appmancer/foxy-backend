@@ -87,6 +87,8 @@ pub enum TransactionError {
     Unauthorized,                           // User is not authorized for this action
     StateMachine(String),
     InvalidTransition(String),
+    Projection(String),
+    NotFound(String),
 
     // External Dependencies
     RateLimitExceeded,                      // API rate limits from third-party services
@@ -126,6 +128,8 @@ impl fmt::Display for TransactionError {
             TransactionError::Unauthorized => write!(f, "Unauthorized request."),
             TransactionError::StateMachine(msg) => write!(f, "State machine error: {}", msg),
             TransactionError::InvalidTransition(msg) => write!(f, "Invalid Transition: {}", msg),
+            TransactionError::Projection(msg) => write!(f, "Invalid Projection: {}", msg),
+            TransactionError::NotFound(msg) => write!(f, "Transaction not found: {}", msg),
 
             // External Dependencies
             TransactionError::RateLimitExceeded => write!(f, "Rate limit exceeded. Please try again later."),

@@ -12,11 +12,11 @@ pub async fn get_sqs_client() -> Result<Client, Error> {
 pub async fn push_to_broadcast_queue(
     sqs_client: &Client,
     queue_url: &str,
-    transaction_id: &str,
+    bundle_id: &str,
     user_id: &str,
 ) -> Result<(), Error> {
     let payload = json!({
-        "transaction_id": transaction_id,
+        "bundle_id": bundle_id,
         "user_id": user_id
     })
         .to_string();
@@ -73,11 +73,11 @@ mod tests {
             .await
             .expect("Failed to get assumed SQS client");
 
-        let transaction_id = "tx_test_12345";
+        let bundle_id = "tx_test_12345";
         let user_id = "user_test_abc";
 
         // Send to queue
-        push_to_broadcast_queue(&sqs_client, &queue_url, transaction_id, user_id)
+        push_to_broadcast_queue(&sqs_client, &queue_url, bundle_id, user_id)
             .await
             .expect("Failed to push message to queue");
 
@@ -88,7 +88,7 @@ mod tests {
         let mut found = false;
         for (body, receipt_handle) in messages {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
-                let matches = parsed.get("transaction_id") == Some(&serde_json::json!(transaction_id))
+                let matches = parsed.get("bundle_id") == Some(&serde_json::json!(bundle_id))
                     && parsed.get("user_id") == Some(&serde_json::json!(user_id));
 
                 if matches {
