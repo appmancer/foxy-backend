@@ -23,11 +23,13 @@ pub async fn handler(event: Request, body: Value) -> Result<Response<Body>, lamb
     let token = extract_bearer_token(&event);
     let mut transaction_request: TransactionRequest  = serde_json::from_value(body)
         .map_err(|_| TransactionError::InvalidRequest)?;
+    tracing::info!("📬 Received transaction request: {:?}", transaction_request);
 
     // Convert gas_pricing → gas_estimate if needed
     if transaction_request.gas_estimate.is_none() {
         if let Some(gp) = &transaction_request.gas_pricing {
             transaction_request.gas_estimate = Some(GasEstimate::try_from(gp.clone())?);
+            tracing::info!("📬 With populated gas estimate: {:?}", transaction_request);
         } else {
             log::error!("Missing gas_pricing and gas_estimate in request");
             return Err(TransactionError::InvalidRequest.into());
@@ -81,7 +83,7 @@ async fn handle_transaction_initiation(
                 let unsigned_fee_tx = UnsignedTransaction::from(&bundle.fee_tx);
                 let unsigned_main_tx = UnsignedTransaction::from(&bundle.main_tx);
                 let unsigned_pair = UnsignedTransactionPair{
-                    bundle_id: bundle.bundle_id, 
+                    bundle_id: bundle.bundle_id,
                     fee: unsigned_fee_tx,
                     main: unsigned_main_tx,
                 };
@@ -133,7 +135,34 @@ fn validate_transaction_request(request: &TransactionRequest) -> Result<(), Tran
     if request.service_fee == 0 {
         return Err(TransactionError::InvalidServiceFee);
     }
+    let gas = match &request.gas_estimate {
+        Some(ge) => Some((ge.gas_limit, ge.max_fee_per_gas, ge.max_priority_fee_per_gas)),
+        None => match &request.gas_pricing {
+            Some(gp) => {
+                let gas_limit = gp.estimated_gas.parse::<u64>().unwrap_or_default();
+                let max_fee = gp.max_fee_per_gas.parse::<u64>().unwrap_or_default();
+                let priority_fee = gp.max_priority_fee_per_gas.parse::<u64>().unwrap_or_default();
+                Some((gas_limit, max_fee, priority_fee))
+            },
+            None => None,
+        }
+    };
 
+    if let Some((gas_limit, max_fee, priority_fee)) = gas {
+        if gas_limit < 21000 {
+            return Err(TransactionError::MissingGasEstimate);
+        }
+        if max_fee == 0 {
+            return Err(TransactionError::MissingGasEstimate);
+        }
+        if priority_fee == 0 {
+            return Err(TransactionError::MissingGasEstimate);
+        }
+    } else {
+        log::error!("❌ Missing both gas_estimate and gas_pricing");
+        return Err(TransactionError::MissingGasEstimate);
+    }
+    
     Ok(())
 }
 

@@ -2,7 +2,7 @@ use http::StatusCode;
 use lambda_http::{Body, Request, Response};
 use lambda_http::RequestExt;
 use crate::endpoints::{test, wallet, status, phone, auth, transactions, keys};
-use foxy_shared::utilities::responses::{success_response, error_response, response_with_code};
+use foxy_shared::utilities::responses::{success_response, response_with_code};
 use foxy_shared::utilities::requests::extract_body;
 
 const GET: &str = "GET";
@@ -43,6 +43,12 @@ pub async fn handle_lambda(event: Request) -> Result<Response<Body>, lambda_http
         (POST, "/transactions/initiate") => transactions::initiate::handler(event, event_body).await,
         (POST, "/transactions/estimate") => transactions::estimate::handler(event, event_body).await,
         (POST, "/transactions/commit") => transactions::commit::handler(event, event_body).await,
+        (GET, "/transactions/recent") => transactions::history::handler(event, event_body).await,
+        (POST, "/transactions/recent") => transactions::history::handler(event, event_body).await,
+        (GET, _) if path.starts_with("/transactions/") => {
+            let id = path.trim_start_matches("/transactions/").to_string();
+            transactions::single::handler(event, &id).await
+        }
 
         //Not found
         _ => response_with_code("Not Found", StatusCode::NOT_FOUND),

@@ -60,7 +60,6 @@ pub async fn handle_signing(token: &str,
         let tem = TransactionEventManager::new(Arc::new(dynamo_db_client.clone()), get_transaction_event_table());
         let event = tem.get_latest_event(&payload.bundle_id).await?;
 
-        log::info!("Transaction event: {:?}", event);
         let new_event = match TransactionEvent::on_signed(&event,
                                                                    &payload.fee_signed_tx,
                                                                    &payload.main_signed_tx,
@@ -69,6 +68,8 @@ pub async fn handle_signing(token: &str,
             Err(e) => { return Err(e) }
         };
 
+        log::info!("new transaction event: {:?}", &new_event);
+        
         let sqs_client = get_sqs_client().await?;
         match push_to_broadcast_queue(&sqs_client, &get_broadcast_queue(), &new_event.bundle_id, &user_id).await{
             Ok(_) => {},
