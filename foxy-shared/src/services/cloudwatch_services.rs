@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use aws_config::BehaviorVersion;
 use std::env;
+use std::sync::Arc;
 
 pub async fn create_cloudwatch_client() -> CloudWatchClient {
     let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
@@ -160,7 +161,7 @@ macro_rules! track_ok {
 
 #[derive(Clone, Debug)]
 pub struct OperationMetricTracker {
-    cloudwatch: CloudWatchClient,
+    cloudwatch: Arc<CloudWatchClient>,
     start: Instant,
     environment: String,
     operation: &'static str,  // "Fee", "Gas", etc.
@@ -170,7 +171,7 @@ impl OperationMetricTracker {
     pub fn new(cloudwatch: CloudWatchClient, operation: &'static str) -> Self {
         let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "dev".to_string());
         Self {
-            cloudwatch,
+            cloudwatch: Arc::new(cloudwatch),
             start: Instant::now(),
             environment,
             operation,
@@ -180,7 +181,7 @@ impl OperationMetricTracker {
     pub async fn build(operation: &'static str) -> Self {
         let cloudwatch = create_cloudwatch_client().await;
         Self {
-            cloudwatch,
+            cloudwatch: Arc::new(cloudwatch),
             start: Instant::now(),
             environment: env::var("ENVIRONMENT").unwrap_or_else(|_| "dev".to_string()),
             operation,
@@ -189,7 +190,7 @@ impl OperationMetricTracker {
 
     pub async fn track<T, E>(&self, result: &Result<T, E>, value: Option<f64>)
     where
-        E: std::fmt::Debug,
+        E: std::fmt::Debug + Send + Sync + 'static,
     {
         let status = if result.is_ok() { "Success" } else { "Error" };
         let elapsed = self.start.elapsed().as_millis() as f64;

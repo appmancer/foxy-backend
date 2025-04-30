@@ -53,8 +53,10 @@ impl TransactionHistoryViewManager {
     pub async fn project_from_event(&self, event: &TransactionEvent) -> Result<(), anyhow::Error> {
         // TODO: Migrate this projection logic to an async Lambda via DynamoDB Streams for better scalability
         // This logic is currently synchronous and runs in the write path
-        let sender_item = TransactionHistoryItem::from_event_and_user(event, &event.bundle_snapshot.main_tx.sender_address);
-        let recipient_item = TransactionHistoryItem::from_event_and_user(event, &event.bundle_snapshot.main_tx.recipient_address);
+        let senderid = &event.clone().bundle_snapshot.metadata.unwrap().sender.unwrap().user_id;
+        let recipientid = &event.clone().bundle_snapshot.metadata.unwrap().recipient.unwrap().user_id;
+        let sender_item = TransactionHistoryItem::from_event_and_user(event, senderid);
+        let recipient_item = TransactionHistoryItem::from_event_and_user(event, recipientid);
 
         let mut tasks = vec![];
 
@@ -62,6 +64,7 @@ impl TransactionHistoryViewManager {
             let pk = format!("User#{}", sender_view.counterparty.user_id);
             let sk = format!("Bundle#{}|{}", sender_view.bundle_id, sender_view.timestamp);
             let item = Self::to_dynamo_item(&pk, &sk, &sender_view)?;
+            info!(?item, "Writing item to History View");
             tasks.push(self.write_item(item));
         }
 
@@ -69,6 +72,7 @@ impl TransactionHistoryViewManager {
             let pk = format!("User#{}", recipient_view.counterparty.user_id);
             let sk = format!("Bundle#{}|{}", recipient_view.bundle_id, recipient_view.timestamp);
             let item = Self::to_dynamo_item(&pk, &sk, &recipient_view)?;
+            info!(?item, "Writing item to History View");
             tasks.push(self.write_item(item));
         }
 
@@ -155,6 +159,9 @@ impl TransactionHistoryViewManager {
     }
 
     async fn write_item(&self, item: HashMap<String, AttributeValue>) -> Result<(), anyhow::Error> {
+        info!(?item, "Writing item to History View");
+        info!("{}", self.table_name.as_str());
+
         self.dynamo_db_client
             .put_item()
             .table_name(&self.table_name)

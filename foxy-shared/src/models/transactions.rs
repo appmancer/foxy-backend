@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use lambda_http::tracing::info;
 use crate::utilities::parsers::u128_from_str;
 use crate::models::estimate_flags::serialize_flags_as_strings;
 use std::fmt;
@@ -12,6 +14,7 @@ use crate::services::cognito_services::get_party_details_from_wallet;
 use crate::utilities::config::{get_chain_id, get_foxy_wallet, get_network};
 use aws_sdk_dynamodb::Client as DynamoDbClient;
 use aws_sdk_cognitoidentityprovider::Client as CognitoClient;
+use aws_sdk_dynamodb::types::AttributeValue;
 use ethers_core::types::H256;
 use ethers_core::utils::keccak256;
 use log::warn;
@@ -464,6 +467,21 @@ impl Transaction {
         self
     }
 
+    pub fn with_block_number(mut self, block_number: Option<u64>) -> Self {
+        self.block_number = block_number;
+        self
+    }
+
+    pub fn with_receipt_status(mut self, status: Option<u64>) -> Self {
+        self.receipt_status = status.map(|s| s as u8);
+        self
+    }
+
+    pub fn with_gas_used(mut self, gas_used: Option<u64>) -> Self {
+        self.gas_used = gas_used;
+        self
+    }
+
     pub fn tx_hash(&self) -> Option<H256> {
         let signed_tx = self.signed_tx.as_ref()?;
         let raw = hex::decode(signed_tx.trim_start_matches("0x")).ok()?;
@@ -580,7 +598,6 @@ impl TransactionEvent {
         Ok(event)
     }
 
-
     pub async fn on_broadcast(
         last_event: &TransactionEvent,
         tx_hash: H256,
@@ -600,6 +617,8 @@ impl TransactionEvent {
 
         let mut bundle = last_event.bundle_snapshot.clone();
         let hash_str = &format!("{:#x}", tx_hash);
+        info!("Broadcasting hash_str: {} - is it concatenated?", hash_str);
+
         let (leg, tx) = match (&last_event.event_type, &bundle.status) {
             (EventType::Sign, BundleStatus::Signed) => {
                 (TransactionLeg::Main, bundle.main_tx
@@ -642,6 +661,72 @@ impl TransactionEvent {
 
         let assigned_event_id = event_store.persist(&event).await?;
         event.event_id = assigned_event_id;
+
+        Ok(event)
+    }
+
+    pub async fn on_confirmed(
+        last_event: &TransactionEvent,
+        updated_tx: &Transaction,
+        event_store: Arc<TransactionEventManager>,
+    ) -> Result<TransactionEvent, TransactionError> {
+        if last_event.event_type != EventType::Broadcast {
+            return Err(TransactionError::InvalidTransition("Can only confirm after Broadcast".into()));
+        }
+
+        if last_event.bundle_status != Some(BundleStatus::Signed)
+            && last_event.bundle_status != Some(BundleStatus::MainConfirmed)
+        {
+            return Err(TransactionError::InvalidTransition(
+                format!("Cannot confirm from bundle status {:?}", last_event.bundle_status),
+            ));
+        }
+
+        let mut bundle = last_event.bundle_snapshot.clone();
+        let (leg, tx) = match (&last_event.bundle_status, &updated_tx.transaction_id) {
+            (Some(BundleStatus::Signed), id) if *id == bundle.main_tx.transaction_id => {
+                (TransactionLeg::Main, updated_tx.clone())
+            }
+            (Some(BundleStatus::MainConfirmed), id) if *id == bundle.fee_tx.transaction_id => {
+                (TransactionLeg::Fee, updated_tx.clone())
+            }
+            _ => {
+                return Err(TransactionError::InvalidTransition(
+                    "Confirmation does not match expected leg".into(),
+                ));
+            }
+        };
+
+        // Apply updated transaction
+        match leg {
+            TransactionLeg::Main => bundle.main_tx = tx,
+            TransactionLeg::Fee => bundle.fee_tx = tx,
+        }
+
+        // Update bundle status
+        bundle.status = match (&bundle.main_tx.status, &bundle.fee_tx.status) {
+            (TransactionStatus::Confirmed, TransactionStatus::Confirmed) => BundleStatus::Completed,
+            (TransactionStatus::Confirmed, _) => BundleStatus::MainConfirmed,
+            _ => bundle.status.clone(), // No change if confirmation did not progress lifecycle
+        };
+
+        bundle.updated_at = Utc::now();
+
+        // Create and persist event
+        let mut event = TransactionEvent {
+            event_id: String::new(),
+            bundle_id: bundle.bundle_id.clone(),
+            user_id: last_event.user_id.clone(),
+            event_type: EventType::Confirm,
+            leg: Some(leg),
+            bundle_status: Some(bundle.status.clone()),
+            transaction_status: Some(TransactionStatus::Confirmed),
+            created_at: Utc::now(),
+            bundle_snapshot: bundle,
+        };
+
+        let new_event_id = event_store.persist(&event).await?;
+        event.event_id = new_event_id;
 
         Ok(event)
     }
@@ -969,21 +1054,40 @@ impl TransactionHistoryItem {
         event: &TransactionEvent,
         current_user_id: &str,
     ) -> Option<Self> {
-        let bundle = &event.bundle_snapshot;
-        let metadata = bundle.metadata.as_ref()?;
 
-        // Safely unwrap both sides
-        let sender = metadata.sender.as_ref()?;
-        let recipient = metadata.recipient.as_ref()?;
+        let bundle = &event.bundle_snapshot;
+        let metadata = match bundle.metadata.as_ref() {
+            Some(m) => m,
+            None => {
+                info!("❌ Missing metadata in bundle {}", bundle.bundle_id);
+                return None;
+            }
+        };
+
+        let sender = match metadata.sender.as_ref() {
+            Some(s) => s,
+            None => {
+                info!("❌ Missing sender in metadata");
+                return None;
+            }
+        };
+
+        let recipient = match metadata.recipient.as_ref() {
+            Some(r) => r,
+            None => {
+                info!("❌ Missing recipient in metadata");
+                return None;
+            }
+        };
+
 
         let (direction, counterparty) = if sender.user_id == current_user_id {
-            (Direction::Outgoing, recipient.clone())
+            (Direction::Outgoing, sender.clone())
         } else if recipient.user_id == current_user_id {
-            (Direction::Incoming, sender.clone())
+            (Direction::Incoming, recipient.clone())
         } else {
             return None; // Not relevant to this user
         };
-
         Some(TransactionHistoryItem {
             bundle_id: bundle.bundle_id.clone(),
             direction,
@@ -1005,7 +1109,66 @@ impl TransactionHistoryItem {
         })
     }
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionStatusView {
+    #[serde(rename = "PK")]
+    pub pk: String,
 
+    #[serde(rename = "Status")]
+    pub status: TransactionStatus,
+
+    #[serde(rename = "TxHash")]
+    pub tx_hash: Option<String>,
+
+    #[serde(rename = "UpdatedAt")]
+    pub updated_at: Option<String>,
+
+    #[serde(rename = "UserID")]
+    pub user_id: Option<String>,
+
+    #[serde(rename = "BundleID")]
+    pub bundle_id: Option<String>,
+}
+
+impl TransactionStatusView {
+    pub fn from_dynamo_item(item: HashMap<String, AttributeValue>) -> Result<Self, TransactionError> {
+        let pk = item.get("PK")
+            .and_then(|v| v.as_s().ok())
+            .ok_or_else(|| TransactionError::DatabaseError("Missing PK".into()))?
+            .to_string();
+
+        let tx_hash = item.get("TxHash")
+            .and_then(|v| v.as_s().ok())
+            .map(|s| s.to_string());
+
+        let status = item.get("Status")
+            .and_then(|v| v.as_s().ok())
+            .ok_or_else(|| TransactionError::DatabaseError("Missing Status".into()))
+            .and_then(|s| TransactionStatus::from_str(&s).map_err(|e| TransactionError::DatabaseError(e)))?;
+
+        let updated_at = item.get("UpdatedAt")
+            .and_then(|v| v.as_s().ok())
+            .map(|s| s.to_string());
+
+        let user_id = item.get("UserID")
+            .and_then(|v| v.as_s().ok())
+            .map(|s| s.to_string());
+        
+        let bundle_id = item.get("BundleID")
+            .and_then(|v| v.as_s().ok())
+            .map(|s| s.to_string());
+
+
+        Ok(TransactionStatusView {
+            pk,
+            tx_hash,
+            status,
+            updated_at,
+            user_id,
+            bundle_id,
+        })
+    }
+}
 
 
 #[cfg(test)]

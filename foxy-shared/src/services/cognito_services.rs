@@ -32,6 +32,7 @@ pub async fn check_user_exists(client: &CognitoClient, user_id: &str) -> Result<
 
 pub async fn create_user(client: &CognitoClient, user_id: &str, name: &str, email: &str, phone_number: Option<&str>) -> Result<(), ValidateError> {
     let user_pool_id = config::get_user_pool_id();
+    log::info!("Creating user with ID: {}", user_id);
 
     let mut attributes = vec![
         AttributeType::builder().name(cognito::NAME_FIELD).value(name).build(),

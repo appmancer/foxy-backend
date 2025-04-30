@@ -5,9 +5,10 @@ use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use aws_sdk_dynamodb::operation::query::QueryOutput;
 use aws_sdk_dynamodb::types::Select;
 use base64::Engine;
-use crate::models::transactions::{Transaction, TransactionEvent, TransactionStatus};
+use crate::models::transactions::{Transaction, TransactionEvent, TransactionStatus, TransactionStatusView};
 use crate::database::transaction_event::TransactionEventManager;
 use tracing::{debug, info};
+use crate::models::errors::TransactionError;
 
 pub struct TransactionStatusViewManager {
     table_name: String,
@@ -25,12 +26,12 @@ impl TransactionStatusViewManager {
         Self { table_name, dynamo_db_client, tem }
     }
 
-    pub async fn project(&self, transaction_id: &str) -> Result<(), anyhow::Error> {
-        let latest_event = self.tem.get_latest_event(transaction_id).await?;
+    pub async fn project(&self, bundle_id: &str) -> Result<(), anyhow::Error> {
+        let latest_event = self.tem.get_latest_event(bundle_id).await?;
         let tx = &latest_event.bundle_snapshot.main_tx;
 
         let item = self.to_dynamo_item(&latest_event, tx)?;
-
+        info!("{:?}", item);
         self.dynamo_db_client
             .put_item()
             .table_name(&self.table_name)
@@ -38,7 +39,7 @@ impl TransactionStatusViewManager {
             .send()
             .await?;
 
-        info!(tx_id = %transaction_id, status = ?latest_event.bundle_status, "📌 Projected status view");
+        info!(bundle_id = %bundle_id, status = ?latest_event.bundle_status, "📌 Projected status view");
         Ok(())
     }
 
@@ -48,26 +49,68 @@ impl TransactionStatusViewManager {
         tx: &Transaction,
     ) -> Result<std::collections::HashMap<String, AttributeValue>, anyhow::Error> {
         let mut item = std::collections::HashMap::new();
-        let status_str = event.bundle_status
-            .as_ref()
-            .expect("missing bundle status")
-            .to_string();
+        let status_str = &tx.status;
 
         item.insert("PK".to_string(), AttributeValue::S(format!("Transaction#{}", tx.transaction_id)));
-        item.insert("Status".to_string(), AttributeValue::S(status_str));
+        item.insert("Status".to_string(), AttributeValue::S(status_str.to_string()));
         item.insert("UpdatedAt".to_string(), AttributeValue::S(event.created_at.to_rfc3339()));
         item.insert("UserID".to_string(), AttributeValue::S(event.user_id.clone()));
+        item.insert("BundleID".to_string(), AttributeValue::S(event.bundle_id.clone()));
 
-        if let Some(ref hash) = tx.tx_hash() {
-            item.insert("TxHash".to_string(), AttributeValue::S(hash.clone().to_string()));
+        if tx.status == TransactionStatus::Pending
+            || tx.status == TransactionStatus::Confirmed
+            || tx.status == TransactionStatus::Failed
+            || tx.status == TransactionStatus::Error {
+            if let Some(ref hash) = tx.tx_hash() {
+                item.insert("TxHash".to_string(), AttributeValue::S(format!("{:#066x}", hash)));
+            }
+            if tx.status == TransactionStatus::Confirmed {
+                if let Some(block) = tx.block_number {
+                    item.insert("BlockNumber".to_string(), AttributeValue::N(block.to_string()));
+                }
+            }
         }
-        if let Some(block) = tx.block_number {
-            item.insert("BlockNumber".to_string(), AttributeValue::N(block.to_string()));
-        }
-
         Ok(item)
     }
 
+    pub async fn query_by_transaction_status(
+        &self,
+        status: TransactionStatus,
+    ) -> Result<Vec<TransactionStatusView>, TransactionError> {
+        let status_str = status.to_string();
+
+        let response = self
+            .dynamo_db_client
+            .query()
+            .table_name(&self.table_name)
+            .index_name("StatusIndex")
+            .key_condition_expression("#status = :status")
+            .expression_attribute_names("#status", "Status")
+            .expression_attribute_values(":status", AttributeValue::S(status_str))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("❌ Failed to query DynamoDB: {:?}", e);
+                TransactionError::DatabaseError(format!("Query failed: {:?}", e))
+            })?;
+
+        let items = response.items();
+        let mut results = Vec::new();
+
+        for item in items {
+            match TransactionStatusView::from_dynamo_item(item.clone()) {
+                Ok(view) => results.push(view),
+                Err(e) => {
+                    tracing::warn!("⚠️ Failed to parse item: {}", e);
+                    continue;
+                }
+            }
+        }
+
+        log::info!("🔍 Found {} transactions with status {}", results.len(), status);
+        Ok(results)
+    }
+    
     pub async fn query_by_status(
         &self,
         status: TransactionStatus,
@@ -200,6 +243,7 @@ impl TransactionStatusViewManager {
             next_page_token,
         })
     }
+
 }
 
 #[cfg(test)]

@@ -3,10 +3,6 @@ name = "foxy-shared"
 version = "0.1.0"
 edition = "2024"
 
-[build]
-incremental = true
-rustflags = ["-C", "incremental=target/incremental"]
-
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
 lambda_http = "0.13.0"

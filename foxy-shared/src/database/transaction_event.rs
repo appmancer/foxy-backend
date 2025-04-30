@@ -2,9 +2,11 @@ use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
+use log::info;
 use uuid::Uuid;
 use crate::database::errors::DynamoDbError;
-use crate::models::transactions::{BundleStatus, EventType, TransactionBundle, TransactionEvent, TransactionLeg, TransactionStatus};
+use crate::models::errors::TransactionError;
+use crate::models::transactions::{BundleStatus, EventType, TransactionBundle, TransactionEvent, TransactionLeg, TransactionStatus, TransactionStatusView};
 use crate::utilities::config::{get_history_view_table, get_transaction_view_table};
 use crate::views::history_view::TransactionHistoryViewManager;
 use crate::views::status_view::TransactionStatusViewManager;
@@ -61,7 +63,7 @@ impl TransactionEventManager {
         }
 
         let history_view = TransactionHistoryViewManager::new(
-            get_history_view_table(), // <- you'll define this like you do get_transaction_view_table()
+            get_history_view_table(),
             self.client.clone(),
         );
 
@@ -108,12 +110,12 @@ impl TransactionEventManager {
     }
 
     pub async fn persist_initial_event(self: Arc<Self>, bundle: &TransactionBundle) -> Result<(), DynamoDbError> {
-        match TransactionEvent::initiate(bundle.clone()){
+        match TransactionEvent::initiate(bundle.clone()) {
             Ok(event) => {
                 self.persist(&event).await?;
                 Ok(())
             }
-            Err(e) => { Err(DynamoDbError::DynamoDbOperation(format!("Unable to persist event: {}", e)))}
+            Err(e) => { Err(DynamoDbError::DynamoDbOperation(format!("Unable to persist event: {}", e))) }
         }
     }
 
@@ -121,16 +123,24 @@ impl TransactionEventManager {
         &self,
         bundle_id: &str,
     ) -> Result<TransactionEvent, DynamoDbError> {
+        let pk_value = format!("Bundle#{}", bundle_id);
+        tracing::info!(%bundle_id, %pk_value, "🔎 Querying DynamoDB for latest event");
+        tracing::info!(table = %self.table_name, "📋 Using table");
+
         let result = self.client
             .query()
             .table_name(&self.table_name)
-            .key_condition_expression("PK = :pk")
+            .key_condition_expression("PK = :pk and begins_with(SK, :sk)")
             .expression_attribute_values(":pk", AttributeValue::S(format!("Bundle#{}", bundle_id)))
+            .expression_attribute_values(":sk", AttributeValue::S("Event#".to_string()))
             .scan_index_forward(false)
             .limit(1)
             .send()
             .await
             .map_err(DynamoDbError::from)?;
+
+        let item_count = result.items.as_ref().map(|items| items.len()).unwrap_or(0);
+        tracing::info!(bundle_id = %bundle_id, item_count, "🔍 Query returned items");
 
         let item = result.items
             .as_ref()
@@ -189,5 +199,4 @@ impl TransactionEventManager {
             bundle_snapshot,
         })
     }
-
 }
