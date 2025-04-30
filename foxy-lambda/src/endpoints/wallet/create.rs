@@ -69,10 +69,6 @@ async fn create_wallet(token: &str,
         update_user_wallet_address(&cognito_client, &user_id, wallet_address)
             .await
             .map_err(|e| WalletError::CognitoUpdateFailed(format!("Failed to update wallet address: {}", e)))?;
-
-        // handle the Option<String> safely, returning an error if wallet address missing
-        let wallet_address = user_profile.wallet_address.as_ref()
-            .ok_or_else(|| WalletError::MissingWallet("Wallet address does not exist".to_string()))?;
         
         // Check the profile for a hashed phone number
         match user_profile.phone_hash{

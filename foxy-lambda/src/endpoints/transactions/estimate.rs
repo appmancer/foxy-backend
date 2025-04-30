@@ -107,7 +107,11 @@ async fn estimate_transaction(token: &str,
                 The exchange rate from the exchange needs to be converted into minor units,
              */
             let mut request = request.clone();
-            let estimated_wei = (request.fiat_value as u128) * 10u128.pow(18) / ((exchange_rate * 100.0) as u128);
+            
+            let pounds = (request.fiat_value as f64) / 100.0;
+            let eth_amount = pounds / exchange_rate;
+            let estimated_wei = (eth_amount * 1e18).floor() as u128;
+            
             request.transaction_value = Some(estimated_wei);
 
             let gas_estimate = match gas::estimate_gas(&request).await {
