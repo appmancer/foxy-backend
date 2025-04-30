@@ -5,23 +5,25 @@ use aws_sdk_dynamodb::Client as DynamoDbClient;
 use dotenv::dotenv;
 use ethers_providers::{Http, Provider};
 use foxy_shared::services::cloudwatch_services::OperationMetricTracker;
-use foxy_shared::models::transactions::{EventType, Transaction, TransactionStatus};
-use foxy_shared::state_machine::transaction_event_factory::{TransactionEvent, TransactionEventFactory};
-use foxy_shared::database::transaction_event::TransactionEventManager;
 use foxy_shared::models::errors::AppError;
+use foxy_shared::database::transaction_event::TransactionEventManager;
+use foxy_shared::utilities::config::{get_rpc_url, get_transaction_event_table, get_transaction_view_table};
 use tokio::signal;
 use tokio::sync::Notify;
 use tracing::{info, error};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
+use foxy_shared::views::status_view::TransactionStatusViewManager;
+use crate::errors::WatcherError;
 use crate::poll_confirmations::poll_confirmations;
 use crate::poll_finalizations::poll_finalizations;
 
 mod poll_confirmations;
 mod poll_finalizations;
 mod watcher_tests;
+mod errors;
 
 #[tokio::main]
-async fn main() -> Result<(), AppError> {
+async fn main() -> Result<(), WatcherError> {
     dotenv().ok();
 
     // Set up structured logging
@@ -33,24 +35,26 @@ async fn main() -> Result<(), AppError> {
 
     info!("🚀 Starting Foxy Watcher...");
 
-    let provider = Arc::new(Provider::<Http>::try_from(std::env::var("WATCHER_RPC_URL")?)?);
+    let provider = Arc::new(Provider::<Http>::try_from(get_rpc_url())?);
     let config = aws_config::load_from_env().await;
     let dynamo = Arc::new(DynamoDbClient::new(&config));
-    let tem = Arc::new(TransactionEventManager::new(dynamo.clone(), std::env::var("TRANSACTION_TABLE")?));
+    let tem = TransactionEventManager::new(dynamo.clone(), get_transaction_event_table());
+    let tsm = Arc::new(TransactionStatusViewManager::new(get_transaction_view_table(), dynamo.clone(), tem.clone()));
 
     let shutdown_notify = Arc::new(Notify::new());
     let shutdown_signal = shutdown_notify.clone();
+    let tem1 = tem.clone();
+    let tsm1 = tsm.clone();
+    let provider1 = provider.clone();
 
     let confirm_handle = {
-        let provider = provider.clone();
-        let tem = tem.clone();
         let shutdown = shutdown_notify.clone();
 
         tokio::spawn(async move {
             loop {
                 let tracker = OperationMetricTracker::build("WatcherConfirmation").await;
 
-                match poll_confirmations(&provider, &tem).await {
+                match poll_confirmations(&provider1, &tem1, &tsm1).await {
                     Ok(count) => info!("🔍 Confirmed {} transactions", count),
                     Err(e) => error!(?e, "Watcher error during confirmation poll"),
                 }
@@ -64,16 +68,16 @@ async fn main() -> Result<(), AppError> {
         })
     };
 
+    let tem2 = tem.clone();
+    let tsm2 = tsm.clone();
+    let provider2 = provider.clone();
     let finalize_handle = {
-        let provider = provider.clone();
-        let tem = tem.clone();
         let shutdown = shutdown_notify.clone();
-
         tokio::spawn(async move {
             loop {
                 let tracker = OperationMetricTracker::build("WatcherFinalizer").await;
 
-                match poll_finalizations(&provider, &tem).await {
+                match poll_finalizations(&provider2, &tem2, &tsm2).await {
                     Ok(count) => info!("🔒 Finalized {} transactions", count),
                     Err(e) => error!(?e, "Watcher error during finalization poll"),
                 }

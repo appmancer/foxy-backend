@@ -1,47 +1,88 @@
 use std::sync::Arc;
-
-use ethers_providers::{Middleware, Provider};
+use ethers_core::types::H256;
+use ethers_providers::{Http, Middleware, Provider};
 use foxy_shared::database::transaction_event::TransactionEventManager;
-use foxy_shared::models::transactions::{TransactionStatus, Transaction};
-use foxy_shared::state_machine::transaction_event_factory::TransactionEventFactory;
-use foxy_shared::models::errors::AppError;
-use tracing::{info, error};
+use foxy_shared::models::transactions::{TransactionStatus, TransactionEvent, TransactionLeg};
+use tracing::{error, info};
+use foxy_shared::views::status_view::TransactionStatusViewManager;
+use crate::WatcherError;
 
-/// Placeholder function to simulate finality check.
-/// In production, this should call Optimism's L1 batch mapping or use a block explorer API.
-async fn is_finalized(_block_number: u64) -> bool {
-    // Temporary logic: assume blocks older than 20 minutes are finalized
-    // Replace with actual L1 finality check when available
-    true
-}
-
-pub async fn poll_finalizations<M: Middleware + 'static>(
-    provider: &Arc<Provider<M>>,
+pub async fn poll_finalizations(
+    provider: &Provider<Http>,
     tem: &Arc<TransactionEventManager>,
-) -> Result<u32, AppError> {
+    tsm: &Arc<TransactionStatusViewManager>,
+) -> Result<u32, WatcherError> {
     let mut count = 0;
 
-    // Fetch all transactions that are marked as Confirmed
-    let confirmed_events = tem.query_by_status(TransactionStatus::Confirmed).await?;
+    // Load all bundles where status is MainConfirmed (i.e., main_tx is confirmed, fee_tx is next)
+    let confirmed_views = tsm.query_by_transaction_status(TransactionStatus::Confirmed).await?;
 
-    for event in confirmed_events {
-        let tx = &event.transaction;
+    for view in confirmed_views {
+        let bundle_id = view.bundle_id.clone().unwrap_or_else(|| "<missing>".to_string());
+        let Some(tx_hash) = &view.tx_hash else {
+            error!(?view, "⛔ View is missing TxHash");
+            continue;
+        };
 
-        let block_number = match tx.block_number {
-            Some(num) => num,
-            None => {
-                error!("Transaction {} has no block number", tx.transaction_id);
+        let Ok(latest_event) = tem.get_latest_event(&bundle_id).await else {
+            error!(bundle_id = %view.pk, "⚠️ Failed to load latest event");
+            continue;
+        };
+
+        // Check if this view relates to the fee leg
+        if latest_event.leg != Some(TransactionLeg::Fee) {
+            continue; // We're only interested in fee confirmations at this stage
+        }
+
+        if latest_event.bundle_snapshot.fee_tx.status == TransactionStatus::Confirmed {
+            info!("✅ Already finalised, skipping");
+            continue;
+        }
+
+        let parsed_hash = match tx_hash.parse::<H256>() {
+            Ok(h) => h,
+            Err(e) => {
+                error!(?e, "❌ Invalid tx hash: {}", tx_hash);
                 continue;
             }
         };
 
-        if is_finalized(block_number).await {
-            let updated = tx.clone().with_status(TransactionStatus::Finalized);
+        // Look up the transaction receipt
+        match provider.get_transaction_receipt(parsed_hash).await {
+            Ok(Some(receipt)) => {
+                let block = receipt.block_number.map(|b| b.as_u64());
+                let status = receipt.status.map(|s| s.as_u64());
 
-            if let Some(new_event) = TransactionEventFactory::process_event(&event, &updated)? {
-                tem.persist_dual(&new_event).await?;
-                info!("🔒 Finalized tx {} in block {}", tx.transaction_id, block_number);
+                // Apply confirmation logic (e.g., status == 1)
+                if status != Some(1) {
+                    error!(tx_hash = %tx_hash, "❌ Fee tx receipt has failure status: {:?}", status);
+                    continue;
+                }
+                if latest_event.leg != Some(TransactionLeg::Fee) {
+                    info!("⏭️ Skipping non-fee leg: {:?}", latest_event.leg);
+                    continue;
+                }
+
+                let tx = &latest_event.bundle_snapshot.fee_tx;
+
+                // Build new event for fee confirmation
+                let updated_tx = tx
+                    .clone()
+                    .with_status(TransactionStatus::Confirmed)
+                    .with_block_number(block)
+                    .with_receipt_status(status);
+
+                let confirmed_event = TransactionEvent::on_confirmed(&latest_event, &updated_tx, tem.clone()).await?;
+                tem.clone().persist(&confirmed_event).await?;
+
+                info!(tx_hash = %tx_hash, block = ?block, "✅ Finalized fee leg");
                 count += 1;
+            }
+            Ok(None) => {
+                continue; // Still pending
+            }
+            Err(err) => {
+                error!(?err, "❌ Error fetching tx receipt");
             }
         }
     }
