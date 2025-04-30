@@ -30,4 +30,4 @@ export AWS_SESSION_TOKEN=$(echo "$CREDS" | jq -r '.SessionToken')
 
 echo "Temporary AWS credentials set for role: $ROLE_ARN"
 
-RUST_LOG=info cargo lambda watch --invoke-port 9001 --verbose
+RUST_LOG=error,foxy_broadcaster=info RUST_BACKTRACE=1 cargo lambda watch --invoke-port 9001 --verbose
