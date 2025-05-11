@@ -128,6 +128,22 @@ pub async fn function_handler_with_cache(
                 }
             };
 
+            //skip if this is a 0 value fee tx
+            if leg == TransactionLeg::Fee && last_event.bundle_snapshot.fee_tx.transaction_value == 0{
+                info!("📌 Skipping broadcast for bundle {}", last_event.bundle_id);
+                match TransactionEvent::on_skip(&last_event, &last_event.bundle_snapshot.fee_tx, tem.clone()).await {
+                    Ok(_) => {
+                        info!("📦 Broadcast event successfully recorded for bundle {}", last_event.bundle_id);
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to emit Broadcast event for bundle {}: {:?}", last_event.bundle_id, e);
+                    }
+                }
+
+                delete_sqs_message(&sqs_client, &queue_url, &receipt_handle).await;
+                return Ok(())
+            }
+
             let signing_data = signing_data.ok_or_else(|| {
                 error!("Missing signing data on event id: {}", &last_event.event_id);
                 ()
