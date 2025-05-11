@@ -38,6 +38,7 @@ pub async fn handle_lambda(event: Request) -> Result<Response<Body>, lambda_http
         //User
         (POST, "/phone/verify") => phone::save_number::handler(event, event_body).await,
         (POST, "/phone/checkfoxyusers") => phone::check_numbers::handler(event, event_body).await,
+        (POST, "/phone/device") => phone::device::handler(event, event_body).await,
 
         //Transaction
         (POST, "/transactions/initiate") => transactions::initiate::handler(event, event_body).await,

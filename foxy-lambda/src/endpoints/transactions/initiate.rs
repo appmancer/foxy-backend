@@ -127,14 +127,7 @@ fn validate_transaction_request(request: &TransactionRequest) -> Result<(), Tran
     if request.transaction_value == 0 {
         return Err(TransactionError::InvalidTransactionValue);
     }
-
-    if request.network_fee == 0 {
-        return Err(TransactionError::InvalidNetworkFee);
-    }
-
-    if request.service_fee == 0 {
-        return Err(TransactionError::InvalidServiceFee);
-    }
+    
     let gas = match &request.gas_estimate {
         Some(ge) => Some((ge.gas_limit, ge.max_fee_per_gas, ge.max_priority_fee_per_gas)),
         None => match &request.gas_pricing {
@@ -170,6 +163,7 @@ fn validate_transaction_request(request: &TransactionRequest) -> Result<(), Tran
 mod tests {
     use super::*;
     use foxy_shared::models::transactions::{TransactionRequest, TokenType, GasPricing};
+    use foxy_shared::models::user_device::UserDevice;
     use foxy_shared::services::authentication::generate_tokens;
     use foxy_shared::utilities::config;
     use foxy_shared::utilities::test::{get_cognito_client_with_assumed_role, get_dynamodb_client_with_assumed_role, init_tracing};
@@ -200,7 +194,6 @@ mod tests {
             message: Some("Here’s £50".to_string()),
             exchange_rate: 2000.0,
             service_fee: 1000,
-            network_fee: 500,
             gas_pricing: Some(GasPricing{
                 estimated_gas: "21000".to_string(),
                 gas_price: "1000521". to_string(),
@@ -208,6 +201,10 @@ mod tests {
                 max_priority_fee_per_gas: "0".to_string(),
             }),
             gas_estimate: None,
+            service_fee_minor: 0,
+            user_device: UserDevice::new("0eacf2aa-e788-4b54-bc1c-a95a05fc7d62".to_string(),
+            "f30M3RyRSpKlDY7lbJBBKu:APA91bGH7m_zXvyYsCHdE5L7DDaT4ObWIe9y_5d3JKANJiM0zC6BJYcrTn1h9cfcaFgpK_hg2Sc32V951WQbP_kuv6ZwjITkhORb7G2pzx1RvbSsVyiu5eI".to_string(),
+            "Android".to_string(), "0.1.0".to_string()),
         };
 
         match handle_transaction_initiation(access_token.as_str(),

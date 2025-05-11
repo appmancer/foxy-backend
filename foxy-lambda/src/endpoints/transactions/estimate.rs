@@ -11,6 +11,7 @@ use aws_sdk_dynamodb::Client as DynamoDbClient;
 use http::{Response, StatusCode};
 use lambda_http::{Body, Request};
 use serde_json::Value;
+use tracing::info;
 use foxy_shared::models::estimate_flags::EstimateFlags;
 use foxy_shared::track_ok;
 use foxy_shared::utilities::authentication::with_valid_user;
@@ -125,25 +126,42 @@ async fn estimate_transaction(token: &str,
                 }
             };
 
-            //Important - the service fee is a % of the crypto value, not the fiat
-            let service_fee = match request.transaction_value {
+            let (service_fee, service_fee_minor) = match request.transaction_value {
                 Some(amount_wei) => {
-                    match fees::calculate_service_fee(dynamodb_client, amount_wei).await {
+                    let service_fee_wei = match fees::calculate_service_fee(dynamodb_client, amount_wei).await {
                         Ok(fee) => fee,
                         Err(_) => {
                             status.insert(EstimateFlags::SERVICE_FEE_UNAVAILABLE);
                             0
                         }
-                    }
+                    };
+
+                    let service_fee_minor = match fees::calculate_service_fee(dynamodb_client, request.fiat_value as u128).await {
+                        Ok(fee) => fee,
+                        Err(_) => {
+                            status.insert(EstimateFlags::SERVICE_FEE_UNAVAILABLE);
+                            0
+                        }
+                    };
+
+                    (service_fee_wei, service_fee_minor)
                 }
                 None => {
                     status.insert(EstimateFlags::SERVICE_FEE_UNAVAILABLE);
-                    0
+                    (0, 0)
                 }
             };
 
+
             let total_fee = gas_estimate.network_fee + service_fee as u128;
             let exchange_rate_expires_at = Utc::now() + chrono::Duration::seconds(60);
+
+            let total_gas_cost_wei = gas_estimate.network_fee * 2;
+            info!("Total gas cost: {}", total_gas_cost_wei);
+            let fee_tx_value_wei = service_fee.saturating_sub(total_gas_cost_wei);
+            info!("Fee tx value: {}", fee_tx_value_wei);
+            let fee_tx_value_eth = format!("{:.8}", wei_to_eth(fee_tx_value_wei));
+            info!("Fee tx value (eth): {}", fee_tx_value_eth);
 
             status = infer_estimate_success(status);
 
@@ -161,6 +179,10 @@ async fn estimate_transaction(token: &str,
                     network_fee_eth: format!("{:.8}", wei_to_eth(gas_estimate.network_fee)),
                     total_fee_wei: total_fee.to_string(),
                     total_fee_eth: format!("{:.8}", wei_to_eth(total_fee)),
+                    display_total_fee: service_fee_minor.to_string(),
+                    fee_tx_value_eth: fee_tx_value_eth.to_string(),
+                    fee_tx_value_wei: fee_tx_value_wei.to_string(),
+                    service_fee_minor: service_fee_minor.to_string(),
                 },
 
                 gas: GasPricing {
@@ -235,7 +257,7 @@ use dotenv::dotenv;
 use super::*;
     use foxy_shared::models::transactions::TokenType;
     use foxy_shared::services::cloudwatch_services::create_cloudwatch_client;
-    use foxy_shared::utilities::test::{get_cognito_client_with_assumed_role, get_dynamodb_client_with_assumed_role};
+    use foxy_shared::utilities::test::{get_cognito_client_with_assumed_role, get_dynamodb_client_with_assumed_role, init_tracing};
 
     #[tokio::test]
     async fn integration_test() -> Result<(), Box<dyn std::error::Error>> {
@@ -309,6 +331,7 @@ use super::*;
 
     #[tokio::test]
     async fn test_transaction_estimate_very_small_amount() -> Result<(), Box<dyn std::error::Error>> {
+        init_tracing();
         let _ = dotenv().is_ok();
         let test_user_id = "108298283161988749543";
         let cognito_client = get_cognito_client_with_assumed_role().await?;
@@ -336,6 +359,10 @@ use super::*;
         assert!(
             response.fees.service_fee_wei.parse::<u128>().unwrap_or(0) > 0,
             "service_fee_wei should still apply"
+        );
+        assert!(
+            response.fees.fee_tx_value_wei.parse::<u128>().unwrap_or(0) == 0,
+            "fee_tx_value_wei should be 0 where the gas fee is > tx value"
         );
         assert!(
             response.status.contains(EstimateFlags::SUCCESS),

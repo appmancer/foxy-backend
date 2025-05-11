@@ -3,7 +3,6 @@ use env_logger;
 use log;
 use crate::router::handle_lambda;
 use foxy_shared::utilities::config;
-use tracing_subscriber;
 
 mod router;
 mod endpoints;
@@ -17,8 +16,8 @@ async fn main() -> Result<(), Error> {
         .with_max_level(tracing::Level::INFO) // or DEBUG if you want more
         .with_target(false)
         .without_time()
-        .init();*/
-
+        .init();
+*/
     std::panic::set_hook(Box::new(|info| {
         log::error!("Application panicked: {}", info);
     }));
