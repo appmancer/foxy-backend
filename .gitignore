@@ -3,3 +3,5 @@
 /foxy-lambda/.env
 /foxy-shared/.env
 /foxy-broadcaster/.env
+/secrets
+
