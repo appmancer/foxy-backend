@@ -51,10 +51,18 @@ impl TransactionHistoryViewManager {
     }
 
     pub async fn project_from_event(&self, event: &TransactionEvent) -> Result<(), anyhow::Error> {
-        // TODO: Migrate this projection logic to an async Lambda via DynamoDB Streams for better scalability
-        // This logic is currently synchronous and runs in the write path
-        let senderid = &event.clone().bundle_snapshot.metadata.unwrap().sender.unwrap().user_id;
-        let recipientid = &event.clone().bundle_snapshot.metadata.unwrap().recipient.unwrap().user_id;
+        let metadata = event.bundle_snapshot.metadata.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing bundle metadata"))?;
+
+        let sender = metadata.sender.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing sender in metadata"))?;
+
+        let recipient = metadata.recipient.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing recipient in metadata"))?;
+
+        let senderid = &sender.user_id;
+        let recipientid = &recipient.user_id;
+
         let sender_item = TransactionHistoryItem::from_event_and_user(event, senderid);
         let recipient_item = TransactionHistoryItem::from_event_and_user(event, recipientid);
 
@@ -116,6 +124,10 @@ impl TransactionHistoryViewManager {
             },
             message: item.get("Message").and_then(|v| v.as_s().ok()).map(String::from),
             tx_hash: item.get("TxHash").and_then(|v| v.as_s().ok()).map(String::from),
+            display_total_fee: item.get("DisplayTotalFee")?.as_s().ok()?.clone(),
+            service_fee_minor: item.get("ServiceFeeMinor")?.as_n().ok()?.parse().ok()?,
+            total_fiat_minor: item.get("TotalFiatMinor")?.as_n().ok()?.parse().ok()?,
+            fee_tx_value_eth: item.get("FeeTxValueEth")?.as_s().ok()?.clone(),
         })
     }
 
@@ -188,6 +200,10 @@ impl TransactionHistoryViewManager {
         item.insert("CounterpartyID".to_string(), AttributeValue::S(view.counterparty.user_id.clone()));
         item.insert("CounterpartyName".to_string(), AttributeValue::S(view.counterparty.name.clone()));
         item.insert("CounterpartyWallet".to_string(), AttributeValue::S(view.counterparty.wallet.clone()));
+        item.insert("DisplayTotalFee".to_string(), AttributeValue::S(view.display_total_fee.clone()));
+        item.insert("ServiceFeeMinor".to_string(), AttributeValue::N(view.service_fee_minor.to_string()));
+        item.insert("TotalFiatMinor".to_string(), AttributeValue::N(view.total_fiat_minor.to_string()));
+        item.insert("FeeTxValueEth".to_string(), AttributeValue::S(view.fee_tx_value_eth.clone()));
 
         if let Some(ref message) = view.message {
             item.insert("Message".to_string(), AttributeValue::S(message.clone()));
@@ -202,9 +218,96 @@ impl TransactionHistoryViewManager {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use super::*;
-    use crate::models::transactions::{Direction, TransactionStatus};
+    use crate::models::transactions::{BundleMetadata, BundleStatus, Direction, EventType, GasPricing, PartyDetails, Transaction, TransactionBundle, TransactionStatus};
+    use crate::models::user_device::UserDevice;
+    use crate::utilities::config;
     use crate::utilities::config::get_history_view_table;
+
+
+    fn mock_event(sender_id: &str, recipient_id: &str) -> TransactionEvent {
+        let sender = PartyDetails {
+            user_id: sender_id.to_string(),
+            name: "Sender Name".to_string(),
+            wallet: "0xSender".to_string(),
+        };
+
+        let recipient = PartyDetails {
+            user_id: recipient_id.to_string(),
+            name: "Recipient Name".to_string(),
+            wallet: "0xRecipient".to_string(),
+        };
+
+        let user_device = UserDevice::new("0eacf2aa-e788-4b54-bc1c-a95a05fc7d62".to_string(),
+                                         "f30M3RyRSpKlDY7lbJBBKu:APA91bGH7m_zXvyYsCHdE5L7DDaT4ObWIe9y_5d3JKANJiM0zC6BJYcrTn1h9cfcaFgpK_hg2Sc32V951WQbP_kuv6ZwjITkhORb7G2pzx1RvbSsVyiu5eI".to_string(),
+                                         "Android".to_string(), "0.1.0".to_string());
+
+        let metadata = BundleMetadata {
+            display_currency: "GBP".to_string(),
+            expected_currency_amount: 1000,
+            message: Some("Test".to_string()),
+            sender: Some(sender.clone()),
+            recipient: Some(recipient.clone()),
+            app_version: None,
+            location: None,
+            service_fee: 100000000000000u128,
+            exchange_rate: 1370.0,
+            gas_pricing: GasPricing {
+                estimated_gas: "21000".to_string(),
+                gas_price: "1000000".to_string(),
+                max_fee_per_gas: "1100000".to_string(),
+                max_priority_fee_per_gas: "150000".to_string(),
+            },
+            service_fee_minor: Some(20),
+            user_device,
+        };
+
+        let bundle = TransactionBundle {
+            bundle_id: "test-bundle-id".to_string(),
+            user_id: sender_id.to_string(),
+            status: BundleStatus::Initiated,
+            fee_tx: Transaction::mock_fee(sender_id, 100000000000000u128),
+            main_tx: Transaction::mock_main(sender_id, recipient_id, 5000000000000000u128),
+            metadata: Some(metadata),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        TransactionEvent {
+            event_id: "event-id".to_string(),
+            bundle_id: bundle.bundle_id.clone(),
+            user_id: sender_id.to_string(),
+            event_type: EventType::Initiate,
+            leg: None,
+            bundle_status: Some(BundleStatus::Initiated),
+            transaction_status: None,
+            created_at: Utc::now(),
+            bundle_snapshot: bundle,
+        }
+    }
+
+    #[test]
+    fn test_sender_view_projection() {
+        let sender_id = "user_sender";
+        let recipient_id = "user_recipient";
+        let event = mock_event(sender_id, recipient_id);
+
+        let view = TransactionHistoryItem::from_event_and_user(&event, sender_id).unwrap();
+        assert_eq!(view.direction, Direction::Outgoing);
+        assert_eq!(view.counterparty.user_id, recipient_id);
+    }
+
+    #[test]
+    fn test_recipient_view_projection() {
+        let sender_id = "user_sender";
+        let recipient_id = "user_recipient";
+        let event = mock_event(sender_id, recipient_id);
+
+        let view = TransactionHistoryItem::from_event_and_user(&event, recipient_id).unwrap();
+        assert_eq!(view.direction, Direction::Incoming);
+        assert_eq!(view.counterparty.user_id, sender_id);
+    }
 
     #[test]
     fn test_parse_history_item_happy_path() {
@@ -238,6 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_by_bundle_id_for_user_query() {
+        config::init();
         use crate::utilities::test::get_dynamodb_client_with_assumed_role;
 
         let client = Arc::new(get_dynamodb_client_with_assumed_role().await);

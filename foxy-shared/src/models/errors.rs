@@ -280,6 +280,58 @@ impl Debug for ValidateError {
 
 impl std::error::Error for ValidateError {}
 
+#[derive(Debug, Error, Serialize, Deserialize)]
+pub enum DeviceError {
+    MissingFingerprint,
+    AuthorizationError(String),
+    DynamoDBUpdateFailed(String),
+    DynamoDBReadFailed(String),
+    ParseError(String),
+}
+impl fmt::Display for DeviceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeviceError::MissingFingerprint  => write!(f, "Fingerprint is missing."),
+            DeviceError::AuthorizationError(msg)  => write!(f, "Authorization failed: {}", msg),
+            DeviceError::DynamoDBUpdateFailed(msg) => write!(f, "Database update failed: {}", msg),
+            DeviceError::DynamoDBReadFailed(msg) => write!(f, "Database read failed: {}", msg),
+            DeviceError::ParseError(msg) => write!(f, "Cannot parse: {}", msg),
+        }
+    }
+}
+impl From<AuthorizationError> for DeviceError {
+    fn from(err: AuthorizationError) -> Self {
+        DeviceError::AuthorizationError(err.to_string())
+    }
+}
+
+impl From<DynamoDbError> for DeviceError {
+    fn from(err: DynamoDbError) -> Self {
+        DeviceError::DynamoDBUpdateFailed(format!("{:?}", err))
+    }
+}
+
+
+#[derive(Debug, Error)]
+pub enum NotificationError {
+    #[error("Failed to read service account key: {0}")]
+    KeyReadFailed(String),
+
+    #[error("Token exchange failed: {0}")]
+    TokenExchangeFailed(String),
+
+    #[error("FCM request failed: {0}")]
+    FcmPushFailed(String),
+
+    #[error("Device lookup failed: {0}")]
+    DeviceLookupFailed(String),
+}
+
+impl From<reqwest::Error> for NotificationError {
+    fn from(err: reqwest::Error) -> Self {
+        NotificationError::FcmPushFailed(err.to_string())
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PhoneNumberError {
     InvalidPhoneNumber(String),

@@ -37,6 +37,10 @@ pub fn get_history_view_table() -> String {
     get_env_var("HISTORY_MATERIALIZED_VIEW_NAME")
 }
 
+pub fn get_user_device_table() -> String {
+    get_env_var("USER_DEVICE_TABLE_NAME")
+}
+
 pub fn get_user_lookup_table() -> String {
     get_env_var("DYNAMODB_USER_LOOKUP_TABLE_NAME")
 }

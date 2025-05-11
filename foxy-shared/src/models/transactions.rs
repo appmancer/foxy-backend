@@ -1,3 +1,4 @@
+use crate::models::user_device::UserDevice;
 use std::collections::HashMap;
 use lambda_http::tracing::info;
 use crate::utilities::parsers::u128_from_str;
@@ -77,7 +78,7 @@ impl TransactionBundle {
             .gas_pricing
             .as_ref()
             .ok_or_else(|| TransactionError::MissingGasEstimate)?;
-        let fee_tx_value = request.service_fee + request.network_fee;
+        let fee_tx_value = request.service_fee;
 
         let nonces = NonceManager::new()?;
         let nonce = nonces.get_nonce(&request.sender_address).await?;
@@ -113,9 +114,10 @@ impl TransactionBundle {
             app_version: None,
             location: None,
             service_fee: request.service_fee,
-            network_fee: request.network_fee,
             exchange_rate: request.exchange_rate,
             gas_pricing: gas_pricing.clone(),
+            service_fee_minor: Some(request.service_fee_minor),
+            user_device: request.user_device.clone(),
         };
 
         Ok(TransactionBundle {
@@ -132,7 +134,7 @@ impl TransactionBundle {
 
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BundleMetadata {
     pub display_currency: String,
     pub expected_currency_amount: u64,
@@ -142,9 +144,10 @@ pub struct BundleMetadata {
     pub app_version: Option<String>,
     pub location: Option<GeoLocation>,
     pub service_fee: u128,
-    pub network_fee: u128,
     pub exchange_rate: f64,
     pub gas_pricing: GasPricing,
+    pub service_fee_minor: Option<u64>,
+    pub user_device: UserDevice,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -200,7 +203,8 @@ pub enum TransactionStatus {
     Confirmed,   // Mined with 1 confirmation
     Failed,      // Reverted or out of gas
     Cancelled,   // User/system abort
-    Error        // Infra/systemic issue
+    Error,       // Infra/systemic issue
+    Skipped,     // Zero value transactions are skipped (typically fees in low-value tx)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +245,7 @@ impl fmt::Display for TransactionStatus {
             TransactionStatus::Failed => write!(f, "Failed"),
             TransactionStatus::Cancelled => write!(f, "Cancelled"),
             TransactionStatus::Error => write!(f, "Error"),
+            TransactionStatus::Skipped => write!(f, "Skipped"),
         }
     }
 }
@@ -270,7 +275,8 @@ pub enum EventType {
     Confirm,
     Fail,
     Cancel,
-    Error
+    Error,
+    Skip,
 }
 
 impl FromStr for EventType {
@@ -285,6 +291,7 @@ impl FromStr for EventType {
             "fail" => Ok(EventType::Fail),
             "cancel" => Ok(EventType::Cancel),
             "error" => Ok(EventType::Error),
+            "skip" => Ok(EventType::Skip),
             _ => Err(format!("Invalid event type: {}", s)),
         }
     }
@@ -300,6 +307,7 @@ impl fmt::Display for EventType {
             EventType::Fail => write!(f, "Fail"),
             EventType::Cancel => write!(f, "Cancel"),
             EventType::Error => write!(f, "Error"),
+            EventType::Skip => write!(f, "Skip"),
         }
     }
 }
@@ -500,7 +508,7 @@ pub struct TransactionEvent {
     pub created_at: DateTime<Utc>,
     pub bundle_status: Option<BundleStatus>,
     pub transaction_status: Option<TransactionStatus>, // if leg is present
-    pub bundle_snapshot: TransactionBundle
+    pub bundle_snapshot: TransactionBundle,
 }
 
 impl TransactionEvent {
@@ -731,6 +739,57 @@ impl TransactionEvent {
         Ok(event)
     }
 
+    pub async fn on_skip(
+        last_event: &TransactionEvent,
+        updated_tx: &Transaction,
+        event_store: Arc<TransactionEventManager>,
+    ) -> Result<TransactionEvent, TransactionError> {
+        if last_event.event_type != EventType::Broadcast {
+            return Err(TransactionError::InvalidTransition("Can only skip after Broadcast".into()));
+        }
+
+        if last_event.bundle_status != Some(BundleStatus::MainConfirmed) {
+            return Err(TransactionError::InvalidTransition("Skip only allowed after MainConfirmed".into()));
+        }
+
+        let mut bundle = last_event.bundle_snapshot.clone();
+
+        if updated_tx.transaction_value > 0 {
+            return Err(TransactionError::InvalidTransition("Fee transaction value must be zero to skip.".into()));
+        }
+
+        if updated_tx.transaction_id != bundle.fee_tx.transaction_id {
+            return Err(TransactionError::InvalidTransition("Skip only allowed for fee transaction.".into()));
+        }
+
+        // Update fee_tx to Skipped
+        let mut skipped_tx = updated_tx.clone();
+        skipped_tx.status = TransactionStatus::Skipped;
+        bundle.fee_tx = skipped_tx;
+
+        // Update bundle status
+        bundle.status = BundleStatus::Completed;
+        bundle.updated_at = Utc::now();
+
+        // Create and persist event
+        let mut event = TransactionEvent {
+            event_id: String::new(),
+            bundle_id: bundle.bundle_id.clone(),
+            user_id: last_event.user_id.clone(),
+            event_type: EventType::Skip,
+            leg: Some(TransactionLeg::Fee),
+            bundle_status: Some(BundleStatus::Completed),
+            transaction_status: Some(TransactionStatus::Skipped),
+            created_at: Utc::now(),
+            bundle_snapshot: bundle,
+        };
+
+        let new_event_id = event_store.persist(&event).await?;
+        event.event_id = new_event_id;
+
+        Ok(event)
+    }
+
     pub async fn on_fail(
         last_event: &TransactionEvent,
         leg: TransactionLeg,
@@ -826,8 +885,9 @@ pub struct TransactionRequest {
     pub exchange_rate: f64,
     #[serde(deserialize_with = "u128_from_str")]
     pub service_fee: u128,
-    #[serde(deserialize_with = "u128_from_str")]
-    pub network_fee: u128
+    pub service_fee_minor: u64,
+
+    pub user_device: UserDevice
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -898,7 +958,7 @@ pub struct TransactionEstimateRequest {
     pub transaction_value: Option<u128>, // Calculated from fiat_amount and exchange rate
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct FeeBreakdown {
     pub service_fee_wei: String,
     pub service_fee_eth: String,
@@ -906,6 +966,10 @@ pub struct FeeBreakdown {
     pub network_fee_eth: String,
     pub total_fee_wei: String,
     pub total_fee_eth: String,
+    pub display_total_fee: String,
+    pub fee_tx_value_eth: String,
+    pub fee_tx_value_wei: String,
+    pub service_fee_minor: String,
 }
 
 //A note to myself, as I forget why this exists.  The Android client doesn't cope well with the
@@ -1047,6 +1111,10 @@ pub struct TransactionHistoryItem {
     pub tx_hash: Option<String>,
 
     pub timestamp: String, // ISO8601, e.g., "2025-04-23T12:01:00Z"
+    pub display_total_fee: String,   // "£2.00"
+    pub service_fee_minor: u64,      // e.g., 200 for £2.00
+    pub total_fiat_minor: u64,       // amount + service_fee_minor
+    pub fee_tx_value_eth: String,    // actual ETH paid in fee_tx
 }
 
 impl TransactionHistoryItem {
@@ -1082,9 +1150,9 @@ impl TransactionHistoryItem {
 
 
         let (direction, counterparty) = if sender.user_id == current_user_id {
-            (Direction::Outgoing, sender.clone())
+            (Direction::Outgoing, recipient.clone())
         } else if recipient.user_id == current_user_id {
-            (Direction::Incoming, recipient.clone())
+            (Direction::Incoming, sender.clone())
         } else {
             return None; // Not relevant to this user
         };
@@ -1106,9 +1174,28 @@ impl TransactionHistoryItem {
             message: metadata.message.clone(),
             timestamp: event.created_at.to_rfc3339(),
             counterparty,
+            display_total_fee: metadata
+                .service_fee_minor
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "0".to_string()),
+
+            service_fee_minor: metadata.service_fee_minor.unwrap_or(0),
+
+            total_fiat_minor: metadata.expected_currency_amount
+                + metadata.service_fee_minor.unwrap_or(0),
+
+            fee_tx_value_eth: format!(
+                "{:.8}",
+                wei_to_eth(bundle.fee_tx.transaction_value)
+            ),
         })
     }
 }
+
+fn wei_to_eth(wei: u128) -> f64 {
+    (wei as f64) / 1e18
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionStatusView {
     #[serde(rename = "PK")]
@@ -1153,7 +1240,7 @@ impl TransactionStatusView {
         let user_id = item.get("UserID")
             .and_then(|v| v.as_s().ok())
             .map(|s| s.to_string());
-        
+
         let bundle_id = item.get("BundleID")
             .and_then(|v| v.as_s().ok())
             .map(|s| s.to_string());
@@ -1170,6 +1257,83 @@ impl TransactionStatusView {
     }
 }
 
+impl Transaction {
+    pub fn mock_fee(user_id: &str, value: u128) -> Self {
+        Self {
+            transaction_id: "fee-tx".to_string(),
+            user_id: user_id.to_string(),
+            sender_address: "0xSender".to_string(),
+            recipient_address: "0xFoxy".to_string(),
+            transaction_value: value,
+            token_type: TokenType::ETH,
+            status: TransactionStatus::Created,
+            network_fee: 0,
+            service_fee: 0,
+            total_fees: 0,
+            fiat_value: 0,
+            fiat_currency: "GBP".to_string(),
+            chain_id: 11155420,
+            signed_tx: None,
+            transaction_hash: None,
+            event_log: None,
+            priority_level: PriorityLevel::Standard,
+            network: Network::OptimismSepolia,
+            gas_price: None,
+            gas_used: None,
+            gas_limit: None,
+            nonce: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            total_fee_paid: None,
+            exchange_rate: None,
+            block_number: None,
+            receipt_status: None,
+            contract_address: None,
+            approval_tx_hash: None,
+            recipient_tx_hash: None,
+            fee_tx_hash: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    pub fn mock_main(user_id: &str, to_user_id: &str, value: u128) -> Self {
+        Self {
+            transaction_id: "main-tx".to_string(),
+            user_id: user_id.to_string(),
+            sender_address: "0xFoxy".to_string(),
+            recipient_address: "0xRecipient".to_string(),
+            transaction_value: value,
+            token_type: TokenType::ETH,
+            status: TransactionStatus::Created,
+            network_fee: 0,
+            service_fee: 0,
+            total_fees: 0,
+            fiat_value: 0,
+            fiat_currency: "GBP".to_string(),
+            chain_id: 11155420,
+            signed_tx: None,
+            transaction_hash: None,
+            event_log: None,
+            priority_level: PriorityLevel::Standard,
+            network: Network::OptimismSepolia,
+            gas_price: None,
+            gas_used: None,
+            gas_limit: None,
+            nonce: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            total_fee_paid: None,
+            exchange_rate: None,
+            block_number: None,
+            receipt_status: None,
+            contract_address: None,
+            approval_tx_hash: None,
+            recipient_tx_hash: None,
+            fee_tx_hash: None,
+            created_at: Utc::now(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1180,6 +1344,46 @@ mod tests {
     use ethers_core::types::H256;
     use crate::utilities::config;
     use crate::utilities::config::get_transaction_event_table;
+    #[cfg(test)]
+    impl Default for Transaction {
+        fn default() -> Self {
+            Self {
+                transaction_id: String::new(),
+                user_id: String::new(),
+                sender_address: String::new(),
+                recipient_address: String::new(),
+                transaction_value: 0,
+                token_type: TokenType::ETH,
+                status: TransactionStatus::Created,
+                network_fee: 0,
+                service_fee: 0,
+                total_fees: 0,
+                fiat_value: 0,
+                fiat_currency: String::new(),
+                chain_id: 0,
+                signed_tx: None,
+                transaction_hash: None,
+                event_log: None,
+                priority_level: PriorityLevel::Standard,
+                network: Network::OptimismSepolia,
+                gas_price: None,
+                gas_used: None,
+                gas_limit: None,
+                nonce: None,
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
+                total_fee_paid: None,
+                exchange_rate: None,
+                block_number: None,
+                receipt_status: None,
+                contract_address: None,
+                approval_tx_hash: None,
+                recipient_tx_hash: None,
+                fee_tx_hash: None,
+                created_at: Utc::now(),
+            }
+        }
+    }
 
     static SIGNED_TX: &str = "0xf86b...";
 
@@ -1197,6 +1401,7 @@ mod tests {
         "exchange_rate": 2300.0,
         "network_fee": "21000000000000",
         "service_fee": "10000000000000",
+        "service_fee_minor": 100,
         "gas_pricing": {
             "estimated_gas": "21000",
             "gas_price": "1000000000",
@@ -1290,6 +1495,7 @@ mod tests {
         "exchange_rate": 2300.0,
         "network_fee": "21000000000000",
         "service_fee": "10000000000000",
+        "service_fee_minor": 100,
         "gas_pricing": {
             "estimated_gas": "21000",
             "gas_price": "1000000000",
@@ -1337,6 +1543,7 @@ mod tests {
         "exchange_rate": 2300.0,
         "network_fee": "21000000000000",
         "service_fee": "10000000000000",
+        "service_fee_minor": 100,
         "gas_pricing": {
             "estimated_gas": "21000",
             "gas_price": "1000000000",
@@ -1417,7 +1624,7 @@ mod tests {
         config::init();
         let tx = Transaction::new("user".into(), "from".into(), "to".into(), 1000, TokenType::ETH, 100, "GBP".into(), 0)
             .with_status(TransactionStatus::Confirmed);
-        let mut bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), None);
+        let mut bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), Some(BundleMetadata::default()));
         bundle.status = BundleStatus::MainConfirmed;
 
         let event = TransactionEvent {
@@ -1442,7 +1649,7 @@ mod tests {
     async fn invalid_event_state_combination() {
         config::init();
         let tx = Transaction::new("user".into(), "from".into(), "to".into(), 1000, TokenType::ETH, 100, "GBP".into(), 0);
-        let bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), None);
+        let bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), Some(BundleMetadata::default()));
 
         let event = TransactionEvent {
             event_id: "e".into(),
@@ -1466,7 +1673,7 @@ mod tests {
     async fn marks_leg_and_bundle_as_failed() {
         config::init();
         let tx = Transaction::new("user".into(), "from".into(), "to".into(), 1000, TokenType::ETH, 100, "GBP".into(), 0);
-        let bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), None);
+        let bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), Some(BundleMetadata::default()));
         let event = TransactionEvent::initiate(bundle).unwrap();
 
         let dynamo = Arc::new(get_dynamodb_client_with_assumed_role().await);
@@ -1479,7 +1686,7 @@ mod tests {
     async fn marks_leg_and_bundle_as_errored() {
         config::init();
         let tx = Transaction::new("user".into(), "from".into(), "to".into(), 1000, TokenType::ETH, 100, "GBP".into(), 0);
-        let bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), None);
+        let bundle = TransactionBundle::new("user".into(), tx.clone(), tx.clone(), Some(BundleMetadata::default()));
         let event = TransactionEvent::initiate(bundle).unwrap();
 
         let dynamo = Arc::new(get_dynamodb_client_with_assumed_role().await);
@@ -1521,6 +1728,10 @@ mod tests {
             wallet: "0xandrew".into(),
         };
 
+        let user_device = UserDevice::new("0eacf2aa-e788-4b54-bc1c-a95a05fc7d62".to_string(),
+                                         "f30M3RyRSpKlDY7lbJBBKu:APA91bGH7m_zXvyYsCHdE5L7DDaT4ObWIe9y_5d3JKANJiM0zC6BJYcrTn1h9cfcaFgpK_hg2Sc32V951WQbP_kuv6ZwjITkhORb7G2pzx1RvbSsVyiu5eI".to_string(),
+                                         "Android".to_string(), "0.1.0".to_string());
+
         let metadata = BundleMetadata {
             display_currency: "GBP".into(),
             expected_currency_amount: 2000,
@@ -1530,9 +1741,10 @@ mod tests {
             app_version: None,
             location: None,
             service_fee: 0,
-            network_fee: 0,
             exchange_rate: 2300.0,
             gas_pricing: GasPricing::default(),
+            service_fee_minor: Some(0),
+            user_device,
         };
 
         let main_tx = Transaction::new(
@@ -1582,6 +1794,4 @@ mod tests {
         assert_eq!(item.tx_hash.as_deref(), Some("0xabc123"));
         assert_eq!(item.message.as_deref(), Some("Thanks for the pizza!"));
     }
-
-
 }

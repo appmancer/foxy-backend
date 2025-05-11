@@ -7,11 +7,13 @@ use ethers_providers::{Http, Provider};
 use foxy_shared::services::cloudwatch_services::OperationMetricTracker;
 use foxy_shared::models::errors::AppError;
 use foxy_shared::database::transaction_event::TransactionEventManager;
-use foxy_shared::utilities::config::{get_rpc_url, get_transaction_event_table, get_transaction_view_table};
+use foxy_shared::utilities::config::{get_rpc_url, get_transaction_event_table, get_transaction_view_table, get_user_device_table};
 use tokio::signal;
 use tokio::sync::Notify;
 use tracing::{info, error};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
+use foxy_shared::repositories::device_repository::DynamoDeviceRepository;
+use foxy_shared::services::notification_services::FirebaseClient;
 use foxy_shared::views::status_view::TransactionStatusViewManager;
 use crate::errors::WatcherError;
 use crate::poll_confirmations::poll_confirmations;
@@ -41,6 +43,20 @@ async fn main() -> Result<(), WatcherError> {
     let tem = TransactionEventManager::new(dynamo.clone(), get_transaction_event_table());
     let tsm = Arc::new(TransactionStatusViewManager::new(get_transaction_view_table(), dynamo.clone(), tem.clone()));
 
+    let device_repo = Arc::new(DynamoDeviceRepository::new(
+        DynamoDbClient::new(&config),
+        get_user_device_table(),
+    ));
+
+    let firebase = Arc::new(
+        FirebaseClient::new(
+            "secrets/firebase-service-account.json",
+            "getfoxy",
+            device_repo,
+        )
+            .await,
+    );
+
     let shutdown_notify = Arc::new(Notify::new());
     let shutdown_signal = shutdown_notify.clone();
     let tem1 = tem.clone();
@@ -54,7 +70,7 @@ async fn main() -> Result<(), WatcherError> {
             loop {
                 let tracker = OperationMetricTracker::build("WatcherConfirmation").await;
 
-                match poll_confirmations(&provider1, &tem1, &tsm1).await {
+                match poll_confirmations(&provider1, &tem1, &tsm1, firebase.clone()).await {
                     Ok(count) => info!("🔍 Confirmed {} transactions", count),
                     Err(e) => error!(?e, "Watcher error during confirmation poll"),
                 }

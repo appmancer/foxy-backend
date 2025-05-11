@@ -34,6 +34,10 @@ pub enum WatcherError {
     #[error("Cannot init: {0}")]
     InitializationError(String),
 
+    #[error("Push Notification failed: {0}")]
+    PushFailed(String),
+
+
 }
 
 impl From<SetGlobalDefaultError> for WatcherError {

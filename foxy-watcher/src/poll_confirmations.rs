@@ -6,6 +6,8 @@ use foxy_shared::models::errors::AppError;
 use foxy_shared::models::transactions::{TransactionStatus, TransactionEvent, TransactionLeg};
 use foxy_shared::services::cloudwatch_services::OperationMetricTracker;
 use tracing::{error, info};
+use foxy_shared::models::notifications::NotificationPayload;
+use foxy_shared::services::notification_services::FirebaseClient;
 use foxy_shared::views::status_view::TransactionStatusViewManager;
 use crate::errors::WatcherError;
 
@@ -13,6 +15,7 @@ pub async fn poll_confirmations(
     provider: &Arc<Provider<Http>>,
     tem: &Arc<TransactionEventManager>,
     tsm: &Arc<TransactionStatusViewManager>,
+    firebase: Arc<FirebaseClient>,
 ) -> Result<u32, WatcherError> {
     let mut count = 0;
     let tracker = OperationMetricTracker::build("WatcherConfirmation").await;
@@ -72,11 +75,13 @@ pub async fn poll_confirmations(
                     .await
                     .map_err(|e| WatcherError::InvalidState(format!("on_confirmed failed: {}", e)))?;
 
-                tem.clone().persist(&confirmed_event)
-                    .await
-                    .map_err(|e| WatcherError::DynamoDb(e))?;
-
                 count += 1;
+
+                // 🔔 Attempt to notify the recipient
+                firebase
+                    .notify_transaction_confirmed(&confirmed_event.bundle_snapshot)
+                    .await
+                    .map_err(|e| WatcherError::PushFailed(format!("Push notification error: {e}")))?;
             }
             Ok(None) => {
                 // Still pending, do nothing
